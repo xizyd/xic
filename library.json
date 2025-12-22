@@ -1,0 +1,25 @@
+{
+  "name": "Xi",
+  "version": "1.0.0",
+  "description": "A library",
+  "keywords": "esp32, mesh, udp, crypto, std",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xizyd/xicpp.git"
+  },
+  "authors": [
+    {
+      "name": "Xi",
+      "maintainer": true
+    }
+  ],
+  "build": {
+    "flags": [
+      "-Iinclude",
+      "-Isrc/external"
+    ],
+    "srcFilter": [
+      "+<src/external/monocypher.c>"
+    ]
+  }
+}
