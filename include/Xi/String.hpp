@@ -1,10 +1,10 @@
-// src/Xi/String.hpp
+// include/Xi/String.hpp
 
 #ifndef STRING_HPP
 #define STRING_HPP
 
 #include "Array.hpp"
-#include "Hasher.hpp"
+#include "Random.hpp"
 
 namespace Xi
 {
@@ -23,6 +23,13 @@ namespace Xi
     int parseInt(const String &s);
     f64 parseDouble(const String &s);
     void secureRandomFill(u8 *buffer, usz size);
+
+    struct VarLongResult
+    {
+        long long value;
+        int bytes;
+        bool error;
+    };
 
     class String : public Array<u8>
     {
@@ -87,6 +94,7 @@ namespace Xi
 
         String() : Array<u8>() {}
         String(const char *s) { append_raw((const u8 *)s, str_len(s)); }
+        String(const char *s, usz len) { append_raw((const u8 *)s, len); }
         String(const u8 *b, usz l) { append_raw(b, l); }
         String(const String &o) : Array<u8>(o) {}
         String(String &&o) : Array<u8>(Xi::Move(o)) {}
@@ -106,11 +114,9 @@ namespace Xi
             return *this;
         }
 
-        usz len() const { return length; }
-
         const char *c_str()
         {
-            if (len() == 0)
+            if (length == 0)
                 return "";
             push(0); // Ensure null terminator exists
             char *ptr = (char *)data();
@@ -164,7 +170,7 @@ namespace Xi
                 return true;
 
             // 2. Check length
-            if (len() != other.len())
+            if (length != other.length)
                 return false;
 
             // 3. Compare bytes
@@ -187,7 +193,7 @@ namespace Xi
         bool operator==(const char *other) const
         {
             usz oLen = str_len(other);
-            if (len() != oLen)
+            if (length != oLen)
                 return false;
             const u8 *d = const_cast<String *>(this)->data();
             for (usz i = 0; i < oLen; ++i)
@@ -216,47 +222,14 @@ namespace Xi
             return s;
         }
 
-        String *pushByte(u8 v)
-        {
-            push(v);
-            return this;
-        }
-        String *pushVarInt(int v)
-        {
-            unsigned int n = (unsigned int)v;
-            do
-            {
-                u8 t = n & 0x7f;
-                n >>= 7;
-                if (n)
-                    t |= 0x80;
-                push(t);
-            } while (n);
-            return this;
-        }
-
-        u8 shiftByte() { return shift(); }
-        int shiftVarInt()
-        {
-            int r = 0, s = 0;
-            u8 b;
-            do
-            {
-                b = shift();
-                r |= (b & 0x7f) << s;
-                s += 7;
-            } while (b & 0x80);
-            return r;
-        }
-
         long long find(const char *needle, usz start = 0) const
         {
             usz nLen = str_len(needle);
-            if (nLen == 0 || len() < nLen)
+            if (nLen == 0 || length < nLen)
                 return -1;
             const u8 *h = const_cast<String *>(this)->data();
             const u8 *n = (const u8 *)needle;
-            for (usz i = start; i <= len() - nLen; ++i)
+            for (usz i = start; i <= length - nLen; ++i)
             {
                 usz j = 0;
                 while (j < nLen && h[i + j] == n[j])
@@ -267,23 +240,29 @@ namespace Xi
             return -1;
         }
 
-        // src/Xi/String.hpp
+        String begin(usz from, usz to) const
+        {
+            // We remove the const qualifier from 'this' so we can call the non-const Array::begin
+            return static_cast<String>(const_cast<String *>(this)->Array<u8>::begin(from, to));
+        }
 
         Array<String> split(const char *sep) const
         {
             Array<String> res;
             usz sLen = str_len(sep);
-            if (sLen == 0) return res;
+            if (sLen == 0)
+                return res;
 
             String *mut = const_cast<String *>(this);
-            usz totalLen = len();
-            
+            usz totalLen = length;
+
             // Phase 1: Collect indices (Read-Only / Flattening)
             // We gather all split points first so we don't interleave finding (flattening)
             // with slicing (fragmenting).
             Array<long long> indices;
             long long pos = find(sep, 0);
-            while(pos != -1) {
+            while (pos != -1)
+            {
                 indices.push(pos);
                 pos = find(sep, (usz)pos + sLen);
             }
@@ -291,10 +270,12 @@ namespace Xi
             // Phase 2: Slice (Fragmenting)
             // Now we can safely fragment the array without re-flattening it in between.
             usz curr = 0;
-            for(usz i = 0; i < indices.length; i++) {
+            for (usz i = 0; i < indices.length; i++)
+            {
                 usz idx = (usz)indices[i];
-                if(idx > totalLen) break;
-                
+                if (idx > totalLen)
+                    break;
+
                 res.push(mut->begin(curr, idx));
                 curr = idx + sLen;
             }
@@ -325,40 +306,299 @@ namespace Xi
 
         int toInt() const { return Xi::parseInt(*this); }
         f64 toDouble() const { return Xi::parseDouble(*this); }
-
-        bool constantTimeEquals(const Xi::String &b) const
+        bool constantTimeEquals(const Xi::String &b, int length = 0) const
         {
             const u8 *ad = data();
             const u8 *bd = b.data();
-            usz aLen = len();
-            usz bLen = b.len();
 
-            // We use a length that covers the data, but we must still
-            // access memory carefully to avoid out-of-bounds.
-            usz maxLen = (aLen > bLen) ? aLen : bLen;
-            usz minLen = (aLen < bLen) ? aLen : bLen;
+            usz aLen = length;
+            usz bLen = b.length;
 
-            u8 result = (aLen ^ bLen); // If lengths differ, result will be non-zero
+            // Determine the actual number of bytes we must check
+            usz compareLen = (length > 0) ? static_cast<usz>(length) : ((aLen > bLen) ? aLen : bLen);
 
-            for (usz i = 0; i < minLen; ++i)
+            // If length is provided, we only care if our buffers are at least that large.
+            // Otherwise, we check if the lengths are identical.
+            u8 result = 0;
+            if (length > 0)
             {
-                result |= ad[i] ^ bd[i];
+                if (aLen < (usz)length || bLen < (usz)length)
+                    result = 1;
+            }
+            else
+            {
+                if (aLen != bLen)
+                    result = 1;
+            }
+
+            for (usz i = 0; i < compareLen; ++i)
+            {
+                u8 aByte = (i < aLen) ? ad[i] : 0;
+                u8 bByte = (i < bLen) ? bd[i] : 0;
+
+                result |= (aByte ^ bByte);
             }
 
             return result == 0;
         }
+        // --- Encoding
+
+        // Inside class String : public Array<u8>
+
+        // --- VarLong (Base-128 VLQ) ---
+
+        String *pushVarLong(long long v)
+        {
+            unsigned long long n = (unsigned long long)v;
+            do
+            {
+                u8 t = n & 0x7f;
+                n >>= 7;
+                if (n)
+                    t |= 0x80;
+                push(t);
+            } while (n);
+            return this;
+        }
+
+        long long shiftVarLong()
+        {
+            unsigned long long r = 0;
+            int s = 0;
+            u8 b;
+            do
+            {
+                // Security: Ensure we do not shift beyond 64 bits (max 10 bytes for 7-bit groups)
+                if (s >= 70)
+                    return 0;
+                // Security: Array::shift() must be checked for bounds internally or here
+                if (length == 0)
+                    return 0;
+
+                b = shift();
+                r |= (unsigned long long)(b & 0x7f) << s;
+                s += 7;
+            } while (b & 0x80);
+            return (long long)r;
+        }
+
+        // Prefixing with unshifted VarLong for length-prefixed buffers
+        String *unshiftVarLong(long long v)
+        {
+            unsigned long long n = (unsigned long long)v;
+            // We must encode in reverse to unshift correctly at the head
+            Array<u8> temp;
+            do
+            {
+                u8 t = n & 0x7f;
+                n >>= 7;
+                if (n)
+                    t |= 0x80;
+                temp.push(t);
+            } while (n);
+
+            // Unshift into the main array from last to first
+            for (long long i = (long long)temp.length - 1; i >= 0; i--)
+            {
+                unshift(temp[i]);
+            }
+            return this;
+        }
+
+        String *unshiftVarLong()
+        {
+            return unshiftVarLong((long long)length);
+        }
+
+        // --- VarString ---
+
+        String *pushVarString(const String &s)
+        {
+            pushVarLong((long long)s.length);
+            append_raw(const_cast<String &>(s).data(), s.length);
+            return this;
+        }
+
+        String shiftVarString()
+        {
+            long long lengthToRead = shiftVarLong();
+            // Security check: ensure the requested length exists in the remaining buffer
+            if (lengthToRead < 0 || (usz)lengthToRead > length)
+            {
+                return String(); // Return empty string on corruption/attack
+            }
+            // Using begin(start, end) to return a fragmented view (Array slice)
+            String result = begin(0, (usz)lengthToRead);
+
+            // Advance the current buffer by removing the bytes we just "read"
+            // Since begin() does not remove, we must drop them manually
+            for (long long i = 0; i < lengthToRead; i++)
+            {
+                shift();
+            }
+            return result;
+        }
+
+        // --- Fixed Size Types ---
+
+        String *pushBool(bool v)
+        {
+            push(v ? 1 : 0);
+            return this;
+        }
+        bool shiftBool() { return length > 0 ? (shift() != 0) : false; }
+
+        String *pushI64(long long v)
+        {
+            for (int i = 0; i < 8; i++)
+                push((u8)((v >> (i * 8)) & 0xff));
+            return this;
+        }
+        long long shiftI64()
+        {
+            if (length < 8)
+                return 0;
+            unsigned long long r = 0;
+            for (int i = 0; i < 8; i++)
+                r |= (unsigned long long)shift() << (i * 8);
+            return (long long)r;
+        }
+
+        String *pushF64(f64 v)
+        {
+            union
+            {
+                f64 f;
+                long long i;
+            } u;
+            u.f = v;
+            return pushI64(u.i);
+        }
+        f64 shiftF64()
+        {
+            union
+            {
+                f64 f;
+                long long i;
+            } u;
+            u.i = shiftI64();
+            return u.f;
+        }
+
+        String *pushF32(f32 v)
+        {
+            union
+            {
+                f32 f;
+                u32 i;
+            } u;
+            u.f = v;
+            for (int i = 0; i < 4; i++)
+                push((u8)((u.i >> (i * 8)) & 0xff));
+            return this;
+        }
+        f32 shiftF32()
+        {
+            if (length < 4)
+                return 0.0f;
+            u32 r = 0;
+            for (int i = 0; i < 4; i++)
+                r |= (u32)shift() << (i * 8);
+            union
+            {
+                f32 f;
+                u32 i;
+            } u;
+            u.i = r;
+            return u.f;
+        }
+
+        VarLongResult peekVarLong(usz offset = 0) const
+        {
+            unsigned long long r = 0;
+            int s = 0;
+            int i = 0;
+
+            // Safety check for offset
+            if (offset >= length)
+                return {0, 0, true};
+
+            const u8 *d = const_cast<String *>(this)->data();
+            usz available = length;
+
+            for (i = (int)offset; i < (int)available; ++i)
+            {
+                u8 b = d[i];
+                r |= (unsigned long long)(b & 0x7f) << s;
+                s += 7;
+
+                if (!(b & 0x80))
+                {
+                    // Success: return value and total bytes (including offset)
+                    return {(long long)r, (i - (int)offset) + 1, false};
+                }
+
+                // Security: Prevent overflow (max 10 bytes for 64-bit)
+                if (s >= 70)
+                    break;
+            }
+
+            // Return error if the buffer ended before the VarLong was finished
+            return {0, 0, true};
+        }
+
+        /**
+         * Converts the string buffer into a space-separated decimal string.
+         * Example: {0x48, 0x69} becomes "72 105"
+         */
+        Xi::String toDeci() const
+        {
+            Xi::String result;
+            for (usz i = 0; i < length; ++i)
+            {
+                // Get the numeric value of the current byte
+                u8 value = (*this)[i];
+
+                // Manual conversion to decimal string to avoid heavy dependencies
+                if (value == 0)
+                {
+                    result.push('0');
+                }
+                else
+                {
+                    char buffer[4]; // Max 3 digits for u8 (255) + null terminator
+                    int pos = 0;
+                    while (value > 0)
+                    {
+                        buffer[pos++] = (value % 10) + '0';
+                        value /= 10;
+                    }
+                    // Reverse the digits and push to result
+                    for (int j = pos - 1; j >= 0; --j)
+                    {
+                        result.push(buffer[j]);
+                    }
+                }
+
+                // Add a space between values, but not after the last one
+                if (i < length - 1)
+                {
+                    result.push(' ');
+                }
+            }
+            return result;
+        }
     };
 
-    // [FIXED] Specialization is now valid because we don't depend on it in the class body
     template <>
-    struct Hasher<String>
+    struct FNVHasher<String>
     {
         static usz hash(const String &s)
         {
             usz h = FNV_OFFSET;
             // data() is safe here because we handle the pointer access
             const u8 *d = const_cast<String &>(s).data();
-            for (usz i = 0; i < s.len(); ++i)
+            for (usz i = 0; i < s.length; ++i)
             {
                 h ^= d[i];
                 h *= FNV_PRIME;
@@ -370,10 +610,10 @@ namespace Xi
     inline void randomFill(String &s, usz len = 0)
     {
         if (len == 0)
-            len = s.len();
-        if (s.len() < len)
+            len = s.length;
+        if (s.length < len)
         {
-            len = s.len();
+            len = s.length;
         }
 
         u8 *raw = const_cast<u8 *>(reinterpret_cast<const u8 *>(s.data()));
@@ -387,10 +627,10 @@ namespace Xi
     inline void secureRandomFill(String &s, usz len = 0)
     {
         if (len == 0)
-            len = s.len();
-        if (s.len() < len)
+            len = s.length;
+        if (s.length < len)
         {
-            len = s.len();
+            len = s.length;
         }
 
         u8 *raw = const_cast<u8 *>(reinterpret_cast<const u8 *>(s.data()));
@@ -404,7 +644,7 @@ namespace Xi
     inline int parseInt(const String &s)
     {
         const u8 *d = const_cast<String &>(s).data();
-        usz length = s.len();
+        usz length = s.length;
         if (length == 0 || !d)
             return 0;
 
@@ -431,7 +671,7 @@ namespace Xi
     inline f64 parseDouble(const String &s)
     {
         const u8 *d = const_cast<String &>(s).data();
-        usz length = s.len();
+        usz length = s.length;
         if (length == 0 || !d)
             return 0.0;
 

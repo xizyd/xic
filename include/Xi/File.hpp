@@ -1,4 +1,4 @@
-// src/Xi/FS.hpp
+// include/Xi/FS.hpp
 
 #ifndef XI_FS_HPP
 #define XI_FS_HPP 1
@@ -15,7 +15,7 @@
     #include <sys/types.h>
     #include <sys/stat.h>
     
-    // Windows constants
+    // Windows primitives
     #ifndef S_ISDIR
     #define S_ISDIR(mode)  (((mode) & S_IFMT) == S_IFDIR)
     #endif
@@ -111,7 +111,7 @@ private:
                     f->release();
                     
                     // Remove standard Windows prefix \??\ if present
-                    if (result.find("\\??\\") == 0) result = result.begin(4, result.len());
+                    if (result.find("\\??\\") == 0) result = result.begin(4, result.length);
                 }
             }
         }
@@ -123,7 +123,7 @@ private:
 public:
     static FSStat stat(const String& path) {
         FSStat s;
-        if (path.len() == 0) return s;
+        if (path.length == 0) return s;
         String native = toNativePath(path);
         const char* p = native;
 
@@ -212,7 +212,7 @@ public:
         String native = toNativePath(path);
         FILE* f = null;
 
-        if (offset == 0 && content.len() > 0) {
+        if (offset == 0 && content.length > 0) {
             // Just overwrite or create
             // If offset is 0, do we want to truncate?
             // "Overwrite all the file" implies truncate.
@@ -256,7 +256,7 @@ public:
             if (!f) return false;
         }
 
-        fwrite(content.data(), 1, content.len(), f);
+        fwrite(content.data(), 1, content.length, f);
         fclose(f);
         return true;
     }
@@ -266,7 +266,7 @@ public:
         String native = toNativePath(path);
         FILE* f = fopen(native, "wb");
         if(!f) return false;
-        fwrite(content.data(), 1, content.len(), f);
+        fwrite(content.data(), 1, content.length, f);
         fclose(f);
         return true;
     }

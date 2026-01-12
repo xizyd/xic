@@ -2,7 +2,8 @@
 #define XI_CRYPTO_HPP
 
 #include "String.hpp"
-#include "Utils.hpp"
+#include "Random.hpp"
+//#include <iostream>
 extern "C" {
     #include "../../src/external/monocypher.h"
 }
@@ -13,9 +14,11 @@ namespace Xi {
     // Structs
     // -------------------------------------------------------------------------
 
-    struct AEADResult {
+    struct AEADOptions {
         Xi::String text; 
+        Xi::String ad;  
         Xi::String tag;  
+        int tagLength = 16;
     };
 
     struct KeyPair {
@@ -50,10 +53,10 @@ namespace Xi {
     }
 
     inline Xi::String streamXor(const Xi::String& key, u64 nonce, const Xi::String& text, int counter = 0) {
-        if (key.len() != 32) return Xi::String();
-        Xi::String result = zeros(text.len());
+        if (key.length != 32) return Xi::String();
+        Xi::String result = zeros(text.length);
         Xi::String cryptoNonce = createIetfNonce(nonce);
-        crypto_chacha20_ietf(result.data(), text.data(), text.len(), key.data(), cryptoNonce.data(), counter);
+        crypto_chacha20_ietf(result.data(), text.data(), text.length, key.data(), cryptoNonce.data(), counter);
         return result;
     }
 
@@ -68,8 +71,8 @@ namespace Xi {
     inline Xi::String hash(const Xi::String& input, int length = 64, const Xi::String& key = Xi::String()) {
         if (length > 64 || length < 1) return Xi::String();
         Xi::String result = zeros(length);
-        if (key.len() == 0) crypto_blake2b(result.data(), length, input.data(), input.len());
-        else crypto_blake2b_keyed(result.data(), length, key.data(), key.len(), input.data(), input.len());
+        if (key.length == 0) crypto_blake2b(result.data(), length, input.data(), input.length);
+        else crypto_blake2b_keyed(result.data(), length, key.data(), key.length, input.data(), input.length);
         return result;
     }
 
@@ -117,7 +120,7 @@ namespace Xi {
      * X25519 Public Key Derivation 
      */
     inline Xi::String publicKey(const Xi::String& privateKey) {
-        if (privateKey.len() != 32) return Xi::String();
+        if (privateKey.length != 32) return Xi::String();
         Xi::String pub = zeros(32);
         crypto_x25519_public_key(pub.data(), privateKey.data());
         return pub;
@@ -138,88 +141,87 @@ namespace Xi {
      * Matching: Xi::sharedKey(sec, pub)
      */
     inline Xi::String sharedKey(const Xi::String& privateKey, const Xi::String& publicKey) {
-        if (privateKey.len() != 32 || publicKey.len() != 32) return Xi::String();
+        if (privateKey.length != 32 || publicKey.length != 32) return Xi::String();
         Xi::String shared = zeros(32);
         crypto_x25519(shared.data(), privateKey.data(), publicKey.data());
         return shared;
     }
 
+    
     /**
      * AEAD Encrypt (ChaCha20-Poly1305)
      * Matching: Xi::aeadSeal(key, nonce, aad, plaintext) -> Returns [Ciphertext][Tag]
      */
-    inline Xi::String aeadSeal(const Xi::String& key, u64 nonce, const Xi::String& associatedData, const Xi::String& plaintext) {
+    inline bool aeadSeal(const Xi::String& key, u64 nonce, AEADOptions &options) {
         // 1. Encrypt (Counter 1)
-        Xi::String ciphertext = streamXor(key, nonce, plaintext, 1);
+        Xi::String ciphertext = streamXor(key, nonce, options.text, 1);
         
         // 2. Poly Key (Counter 0)
         Xi::String oneTimeKey = createPoly1305Key(key, nonce);
 
         // 3. Auth Data Construction
-        usz aad_len = associatedData.len();
-        usz cipher_len = ciphertext.len();
+        usz aad_len = options.ad.length;
+        usz cipher_len = ciphertext.length;
         usz aad_pad = (16 - (aad_len % 16)) % 16;
         usz cipher_pad = (16 - (cipher_len % 16)) % 16;
 
         Xi::String dataToAuth;
-        dataToAuth += associatedData;
+        dataToAuth += options.ad;
         dataToAuth += zeros(aad_pad);
         dataToAuth += ciphertext;
         dataToAuth += zeros(cipher_pad);
         for (int i = 0; i < 8; ++i) dataToAuth.push((aad_len >> (i * 8)) & 0xFF);
         for (int i = 0; i < 8; ++i) dataToAuth.push((cipher_len >> (i * 8)) & 0xFF);
 
+        //std::cout << "DataToAuth-Seal (Deci): " << dataToAuth.toDeci() << "\n";
         // 4. Calc Tag
         Xi::String tag = zeros(16);
-        crypto_poly1305(tag.data(), dataToAuth.data(), dataToAuth.len(), oneTimeKey.data());
+        crypto_poly1305(tag.data(), dataToAuth.data(), dataToAuth.length, oneTimeKey.data());
 
-        // 5. Return [Ciphertext][Tag]
-        Xi::String res = ciphertext;
-        res += tag;
-        return res;
+        options.text = ciphertext;
+        options.tag = tag.begin(0, options.tagLength);
+
+        //std::cout << "Sealed TAG: " << options.tag.toDeci() << "\n";
+        return true;
     }
 
     /**
      * AEAD Decrypt (ChaCha20-Poly1305)
      * Matching: Xi::aeadOpen(key, nonce, aad, sealed) -> Returns Plaintext or Empty
      */
-    inline Xi::String aeadOpen(const Xi::String& key, u64 nonce, const Xi::String& associatedData, const Xi::String& sealed) {
-        if (sealed.len() < 16) return Xi::String();
+    inline bool aeadOpen(const Xi::String& key, u64 nonce, AEADOptions &options) {
+        if (options.text.length < 16) return Xi::String();
         
-        // Split Sealed into Ciphertext and Tag
-        usz tagLen = 16;
-        usz cipherLen = sealed.len() - tagLen;
-        
-        Xi::String ciphertext;
-        ciphertext.pushEach(sealed.data(), cipherLen);
-        
-        Xi::String tag;
-        tag.pushEach(sealed.data() + cipherLen, tagLen);
-
         // 1. Poly Key
         Xi::String oneTimeKey = createPoly1305Key(key, nonce);
 
         // 2. Auth Data
-        usz aad_len = associatedData.len();
+        usz aad_len = options.ad.length;
         usz aad_pad = (16 - (aad_len % 16)) % 16;
-        usz cipher_pad = (16 - (cipherLen % 16)) % 16;
+        usz cipher_pad = (16 - (options.text.length % 16)) % 16;
 
         Xi::String dataToAuth;
-        dataToAuth += associatedData;
+        dataToAuth += options.ad;
         dataToAuth += zeros(aad_pad);
-        dataToAuth += ciphertext;
+        dataToAuth += options.text;
         dataToAuth += zeros(cipher_pad);
-        for (int i = 0; i < 8; ++i) dataToAuth.push((aad_len >> (i * 8)) & 0xFF);
-        for (int i = 0; i < 8; ++i) dataToAuth.push((cipherLen >> (i * 8)) & 0xFF);
+        for (int i = 0; i < 8; ++i) dataToAuth.push((options.ad.length >> (i * 8)) & 0xFF);
+        for (int i = 0; i < 8; ++i) dataToAuth.push((options.text.length >> (i * 8)) & 0xFF);
 
+        //std::cout << "DataToAuth-Open (Deci): " << dataToAuth.toDeci() << "\n";
         // 3. Verify
         Xi::String calculatedTag = zeros(16);
-        crypto_poly1305(calculatedTag.data(), dataToAuth.data(), dataToAuth.len(), oneTimeKey.data());
+        crypto_poly1305(calculatedTag.data(), dataToAuth.data(), dataToAuth.length, oneTimeKey.data());
 
-        if (!tag.constantTimeEquals(calculatedTag)) return Xi::String();
+        //std::cout << "Recv TAG: " << options.tag.toDeci() << "\n";
+        //std::cout << "Calc TAG: " << calculatedTag.toDeci() << "\n";
+        
+        if (!options.tag.constantTimeEquals(calculatedTag, options.tagLength)) return false;
+        //std::cout << "Pass \n";
 
         // 4. Decrypt
-        return streamXor(key, nonce, ciphertext, 1);
+        options.text = streamXor(key, nonce, options.text, 1);
+        return true;
     }
 
     inline void secureRandomFill(u8 *buffer, usz size) {

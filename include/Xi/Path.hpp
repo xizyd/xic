@@ -31,7 +31,7 @@ namespace Xi
         {
             String out;
             const u8 *d = in.data();
-            usz len = in.len();
+            usz len = in.length;
             for (usz i = 0; i < len; ++i)
             {
                 if (d[i] == '%' && i + 2 < len)
@@ -57,7 +57,7 @@ namespace Xi
             if (_queryParsed) return;
             const_cast<Map<String, String>&>(_queryMap).clear();
 
-            if (_rawQuery.len() == 0) {
+            if (_rawQuery.length == 0) {
                 _queryParsed = true;
                 return;
             }
@@ -69,7 +69,7 @@ namespace Xi
                 long long eq = pair.find("=");
                 if (eq != -1) {
                     String k = urlDecode(pair.begin(0, (usz)eq));
-                    String v = urlDecode(pair.begin((usz)eq + 1, pair.len()));
+                    String v = urlDecode(pair.begin((usz)eq + 1, pair.length));
                     _queryMap.put(k, v);
                 } else {
                     _queryMap.put(urlDecode(pair), "");
@@ -84,7 +84,7 @@ namespace Xi
             if (resetStack) _segments = Array<String>();
 
             const u8* data = rawPath.data();
-            usz len = rawPath.len();
+            usz len = rawPath.length;
             usz start = 0;
 
             for(usz i = 0; i < len; ++i) {
@@ -106,7 +106,7 @@ namespace Xi
         }
 
         void processSegment(const String &p) {
-            if (p.len() == 0 || p == ".") return;
+            if (p.length == 0 || p == ".") return;
             if (p == "..") {
                 if (_segments.length > 0) _segments.pop();
             } else {
@@ -137,7 +137,7 @@ namespace Xi
     private:
         void resolve(bool isLeader, const String &raw)
         {
-            if (raw.len() == 0) return;
+            if (raw.length == 0) return;
 
             // 1. Extract Query
             String pathPart = raw;
@@ -145,8 +145,8 @@ namespace Xi
             if (qIdx != -1)
             {
                 pathPart = ((Array<u8>)raw).begin(0, (usz)qIdx);
-                String q = ((Array<u8>)raw).begin((usz)qIdx + 1, raw.len());
-                if (_rawQuery.len() > 0) _rawQuery += "&";
+                String q = ((Array<u8>)raw).begin((usz)qIdx + 1, raw.length);
+                if (_rawQuery.length > 0) _rawQuery += "&";
                 _rawQuery += q;
                 _queryParsed = false;
             }
@@ -163,13 +163,13 @@ namespace Xi
                     _protocol = pathPart.begin(0, (usz)protoIdx);
                     usz afterProto = (usz)protoIdx + 3;
                     long long pathSlash = pathPart.find("/", afterProto);
-                    usz hostEnd = (pathSlash == -1) ? pathPart.len() : (usz)pathSlash;
+                    usz hostEnd = (pathSlash == -1) ? pathPart.length : (usz)pathSlash;
 
                     String auth = pathPart.begin(afterProto, hostEnd);
                     long long portColon = auth.find(":");
                     if (portColon != -1) {
                         _hostname = auth.begin(0, (usz)portColon);
-                        _port = auth.begin((usz)portColon + 1, auth.len());
+                        _port = auth.begin((usz)portColon + 1, auth.length);
                     } else {
                         _hostname = auth;
                         _port = "";
@@ -181,19 +181,19 @@ namespace Xi
                     // Protocol found in later part -> Reset (absolute override)
                     usz afterProto = (usz)protoIdx + 3;
                     long long pathSlash = pathPart.find("/", afterProto);
-                    pathStart = (pathSlash != -1) ? (usz)pathSlash : pathPart.len();
+                    pathStart = (pathSlash != -1) ? (usz)pathSlash : pathPart.length;
                     _segments = Array<String>();
                 }
             }
 
             // 3. Process Path
-            String p = pathPart.begin(pathStart, pathPart.len());
+            String p = pathPart.begin(pathStart, pathPart.length);
 
             // Check for absolute path char
             const u8 *pData = const_cast<String &>(p).data();
             bool isAbsLocal = false;
-            if (p.len() > 0 && (pData[0] == '/' || pData[0] == '\\')) isAbsLocal = true;
-            if (p.len() >= 3 && pData[1] == ':' && (pData[2] == '/' || pData[2] == '\\')) isAbsLocal = true;
+            if (p.length > 0 && (pData[0] == '/' || pData[0] == '\\')) isAbsLocal = true;
+            if (p.length >= 3 && pData[1] == ':' && (pData[2] == '/' || pData[2] == '\\')) isAbsLocal = true;
 
             if (isAbsLocal) {
                 _segments = Array<String>();
@@ -214,7 +214,7 @@ namespace Xi
 
         String host() const
         {
-            if (_port.len() > 0) return _hostname + ":" + _port;
+            if (_port.length > 0) return _hostname + ":" + _port;
             return _hostname;
         }
 
@@ -238,12 +238,12 @@ namespace Xi
         {
             String out;
 
-            if (protocolAndHostname && _protocol.len() > 0)
+            if (protocolAndHostname && _protocol.length > 0)
             {
                 out += _protocol;
                 out += "://";
                 out += _hostname;
-                if (_port.len() > 0) {
+                if (_port.length > 0) {
                     out += ":";
                     out += _port;
                 }
@@ -253,7 +253,7 @@ namespace Xi
             
             // Logic for leading slash
             bool addLeadingSlash = false;
-            if (protocolAndHostname && _protocol.len() > 0) {
+            if (protocolAndHostname && _protocol.length > 0) {
                  // URL: add slash if we have path segments
                  if (_segments.length > 0) addLeadingSlash = true;
             } else {
@@ -278,14 +278,14 @@ namespace Xi
                         for (auto it = _queryMap.begin(); it != _queryMap.end(); ++it) {
                             if (!first) out += "&";
                             out += it->key;
-                            if (it->value.len() > 0) {
+                            if (it->value.length > 0) {
                                 out += "=";
                                 out += it->value;
                             }
                             first = false;
                         }
                     }
-                } else if (_rawQuery.len() > 0) {
+                } else if (_rawQuery.length > 0) {
                     out += "?";
                     out += _rawQuery;
                 }
@@ -313,13 +313,13 @@ namespace Xi
             usz up = parent._segments.length - common;
             for (usz i = 0; i < up; ++i)
             {
-                if (res.len() > 0) res += "/";
+                if (res.length > 0) res += "/";
                 res += "..";
             }
 
             for (usz i = common; i < _segments.length; ++i)
             {
-                if (res.len() > 0 || up > 0) res += "/";
+                if (res.length > 0 || up > 0) res += "/";
                 res += _segments[i];
             }
 

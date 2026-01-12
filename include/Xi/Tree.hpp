@@ -3,28 +3,12 @@
 
 #include "Array.hpp"
 #include "String.hpp"
-#include "Utils.hpp"
 
 // RTTI required for dynamic_cast and typeid (Auto-Naming)
 #include <typeinfo>
 
 namespace Xi
 {
-    // -------------------------------------------------------------------------
-    // Interfaces / Mixins
-    // -------------------------------------------------------------------------
-
-    struct RenderOptions {
-        bool visible = true;
-        f32 opacity = 1.0f;
-        virtual ~RenderOptions() {}
-    };
-
-    struct Renderable3D {
-        virtual void render() = 0;
-        virtual ~Renderable3D() {}
-    };
-
     class TreeItem;
 
     // -------------------------------------------------------------------------
@@ -32,7 +16,7 @@ namespace Xi
     // -------------------------------------------------------------------------
 
     enum class Combinator {
-        None,       // The target itself
+        NoCombinator,       // The target itself
         Descendant, // " " (Space)
         Child       // ">"
     };
@@ -40,7 +24,7 @@ namespace Xi
     struct SelectorPart {
         String tag;
         Array<String> classes;
-        Combinator relationToLeft = Combinator::None; 
+        Combinator relationToLeft = Combinator::NoCombinator; 
 
         bool matches(const TreeItem* item) const;
     };
@@ -57,7 +41,7 @@ namespace Xi
 
         static Array<SelectorPart> parse_selector(const String& queryStr) {
             Array<SelectorPart> parts;
-            if (queryStr.len() == 0) return parts;
+            if (queryStr.length == 0) return parts;
 
             Array<String> tokens = queryStr.split(" ");
             
@@ -83,7 +67,7 @@ namespace Xi
                 
                 current.classes.length = 0;
                 for(usz k = 1; k < sub.length; ++k) {
-                    if (sub[k].len() > 0) current.classes.push(sub[k]);
+                    if (sub[k].length > 0) current.classes.push(sub[k]);
                 }
 
                 current.relationToLeft = pendingComb;
@@ -187,7 +171,7 @@ namespace Xi
             
             // 1. Auto-Naming: 
             // If child has no name set manually, use its C++ class name.
-            if (child->name.len() == 0) {
+            if (child->name.length == 0) {
                 child->name = demangle_name(typeid(*child).name());
             }
 
@@ -264,7 +248,7 @@ namespace Xi
 
     inline bool SelectorPart::matches(const TreeItem* item) const {
         // Tag Match (Case sensitive Name)
-        if (tag.len() > 0 && tag != "*") {
+        if (tag.length > 0 && tag != "*") {
             if (item->name != tag) return false;
         }
         // Class Match (All required classes must exist)
