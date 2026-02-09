@@ -101,10 +101,7 @@ namespace Xi
          */
         static String build(const String &data)
         {
-            String frame;
-            frame.pushVarLong((long long)data.length);
-            frame.concat(data);
-            return frame;
+            return *(data.begin().unshiftVarLong());
         }
     };
 }

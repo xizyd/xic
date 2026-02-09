@@ -33,33 +33,33 @@ namespace Xi
         bool is_heap;
 
         // --- Implementation Helpers ---
-        template <typename F>
+        template <typename Callable>
         static R invoke_fn(void *ptr, Args... args)
         {
             // If heap, ptr is the address of the pointer itself, so we dereference
-            F *func = static_cast<F *>(ptr);
+            Callable *func = static_cast<Callable *>(ptr);
             return (*func)(args...);
         }
 
-        template <typename F>
+        template <typename Callable>
         static void destroy_fn(void *ptr)
         {
-            static_cast<F *>(ptr)->~F();
+            static_cast<Callable *>(ptr)->~Callable();
         }
 
-        template <typename F>
+        template <typename Callable>
         static void clone_fn(const void *src, void *dst)
         {
-            const F *source = static_cast<const F *>(src);
-            if (sizeof(F) <= SBO_Size)
+            const Callable *source = static_cast<const Callable *>(src);
+            if (sizeof(Callable) <= SBO_Size)
             {
-                new (dst) F(*source);
+                new (dst) Callable(*source);
             }
             else
             {
                 // Heap clone
-                F *copy = (F *)::operator new(sizeof(F));
-                new (copy) F(*source);
+                Callable *copy = (Callable *)::operator new(sizeof(Callable));
+                new (copy) Callable(*source);
                 *(void **)dst = (void *)copy;
             }
         }
@@ -70,10 +70,25 @@ namespace Xi
             data.heap = null;
         }
 
-        template <typename F>
-        Func(F f)
+        // Add this to your public section in XiFunc.hpp
+        Func(R (*f)(Args...))
         {
-            using DecayedF = F;
+            using DecayedF = R (*)(Args...);
+            static const VTable vt = {
+                invoke_fn<DecayedF>,
+                destroy_fn<DecayedF>,
+                clone_fn<DecayedF>};
+            vptr = &vt;
+
+            // Function pointers always fit in SBO_Size
+            new (data.local) DecayedF(f);
+            is_heap = false;
+        }
+
+        template <typename Callable>
+        Func(Callable f)
+        {
+            using DecayedF = Callable;
             static const VTable vt = {
                 invoke_fn<DecayedF>,
                 destroy_fn<DecayedF>,

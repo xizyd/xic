@@ -1,452 +1,279 @@
 #ifndef RHO_RAILWAY_HPP
 #define RHO_RAILWAY_HPP
 
-// #include <iostream>
-#include "Xi/Array.hpp"
-#include "Xi/String.hpp"
-#include "Xi/Map.hpp"
-#include "Xi/Crypto.hpp"
-#include "Xi/Func.hpp"
-#include "Xi/Time.hpp"
+#include "../Xi/Array.hpp"
+#include "../Xi/Crypto.hpp"
+#include "../Xi/Func.hpp"
+#include "../Xi/Map.hpp"
+#include "../Xi/String.hpp"
+#include "../Xi/Time.hpp"
 
-namespace Xi
-{
+namespace Xi {
 
-    // -------------------------------------------------------------------------
-    // Primitives & Flags
-    // -------------------------------------------------------------------------
-    static const unsigned char RAILWAY_SECURE = 0x01;
-    static const unsigned char RAILWAY_HAS_META = 0x04;
+static const unsigned char RAILWAY_SECURE = 0x01;
+static const unsigned char RAILWAY_IS_BROADCAST = 0x02;
+static const unsigned char RAILWAY_HAS_META = 0x04;
 
-    // -------------------------------------------------------------------------
-    // Railway Class
-    // -------------------------------------------------------------------------
+class Railway {
+public:
+  struct RailwayPacket {
+    u32 channel;
+    Xi::String payload;
+  };
 
-    class Railway
-    {
-    public:
-        struct RailwayPacket
-        {
-            u32 channel;
-            Xi::String payload;
-        };
+  struct RailwayChannel {
+    Xi::String key;
+    Xi::Array<Xi::u8> bitmap;
+    Xi::u64 slidePos = 0;
+    Xi::u64 lastSentNonce = 0;
+    Xi::u64 lastReceivedTime = 0;
+    Xi::u64 lastSentTime = 0;
+    String lastSentMeta;
+    bool updateMeta = false;
+    bool isEnabled = false;
+    Xi::Map<u64, Xi::String> meta;
+  };
 
-        struct RailwayChannel
-        {
-            Xi::String key;
-            Xi::Array<Xi::u8> bitmap; // Window bitmap
-            Xi::u64 slidePos;
+  struct ParseResult {
+    bool success = false;
+    u32 channelID = 0;
+    RailwayChannel *channel = nullptr;
+    Xi::String payload;
+  };
 
-            Xi::u64 lastSentNonce;
+private:
+  Xi::Map<u32, RailwayChannel> channels;
+  Xi::Array<u32> availableToGenerate;
+  int windowBitmapSize = 64;
+  u64 destroyTimeout = 17000;
+  Xi::Func<void(RailwayChannel *, u32)> clearCallback;
 
-            Xi::u64 lastReceivedTime;
-            Xi::u64 lastSentTime;
+  void generateNewAvailableId() {
+    while (true) {
+      u32 id = (Xi::random(100000)) + 1;
+      if (channels.has(id))
+        continue;
+      if (availableToGenerate.find(id) != -1)
+        continue;
+      availableToGenerate.push(id);
+      return;
+    }
+  }
 
-            String lastReceivedMeta;
-            bool updateMeta = false;
+public:
+  Railway() {}
 
-            Xi::Map<u64, Xi::String> meta; // Switched from Array<TypedData> to Map
-        };
+  void setWindowBitmap(int size) {
+    if (size > 0 && size % 8 == 0)
+      windowBitmapSize = size;
+  }
+  void setClearTimeout(u64 ms) { destroyTimeout = ms; }
+  void onClear(Xi::Func<void(RailwayChannel *, u32)> cb) {
+    clearCallback = Xi::Move(cb);
+  }
 
-    private:
-        Xi::Map<u32, RailwayChannel> channels;
-        Xi::Array<u32> availableToGenerate;
+  void enable(u32 channelId) {
+    RailwayChannel *ch = get(channelId);
+    if (ch)
+      ch->isEnabled = true;
+  }
 
-        int windowBitmapSize;
-        int scanLength;
-        Xi::u64 destroyTimeout;
+  int generate() {
+    if (availableToGenerate.length == 0)
+      generateNewAvailableId();
+    return availableToGenerate.pop();
+  }
 
-        // --- Helpers ---
+  RailwayChannel *get(int channelId, const Xi::String &key = Xi::String()) {
+    if (!channels.has(channelId)) {
+      RailwayChannel ch;
+      ch.key = key;
+      ch.bitmap.alloc(windowBitmapSize / 8);
+      for (int i = 0; i < windowBitmapSize / 8; ++i)
+        ch.bitmap.push(0);
+      ch.lastReceivedTime = Xi::millis();
+      channels.put(channelId, ch);
+      return channels.get(channelId);
+    }
+    RailwayChannel *ch = channels.get(channelId);
+    if (key.length > 0)
+      ch->key = key;
+    return ch;
+  }
 
-        void generateNewAvailableId()
-        {
-            while (true)
-            {
-                u32 newId = (Xi::random(100000)) + 1; // 1 to 100000
+  void remove(int channelId) {
+    if (channels.has(channelId)) {
+      if (clearCallback.isValid())
+        clearCallback(channels.get(channelId), channelId);
+      channels.remove(channelId);
+    }
+  }
 
-                // Ensure not in use
-                if (channels.has(newId))
-                    continue;
+  Xi::String build(const RailwayPacket &pkt) {
+    RailwayChannel *ch = get(pkt.channel);
+    bool isSecure = (ch->key.length == 32);
+    u8 header = 0;
+    if (isSecure)
+      header |= RAILWAY_SECURE;
+    if (!ch->isEnabled)
+      header |= RAILWAY_IS_BROADCAST;
 
-                // Ensure not in available list
-                if (availableToGenerate.find(newId) != -1)
-                    continue;
+    Xi::String metaBlob;
+    for (auto &it : ch->meta) {
+      metaBlob.pushVarLong((long long)it.key);
+      metaBlob.pushVarLong(it.value.length);
+      metaBlob += it.value;
+    }
 
-                availableToGenerate.push(newId);
-                return;
-            }
+    Xi::String content;
+    if (ch->updateMeta || !metaBlob.constantTimeEquals(ch->lastSentMeta)) {
+      header |= RAILWAY_HAS_META;
+      content.pushVarLong((long long)metaBlob.length);
+      content += metaBlob;
+      ch->updateMeta = false;
+      ch->lastSentMeta = metaBlob;
+    }
+
+    content += pkt.payload;
+    Xi::String ad;
+    ad.push(header);
+    ad.push((pkt.channel >> 16) & 0xFF);
+    ad.push((pkt.channel >> 8) & 0xFF);
+    ad.push(pkt.channel & 0xFF);
+
+    ch->lastSentTime = Xi::millis();
+
+    if (isSecure) {
+      ch->lastSentNonce++;
+      Xi::AEADOptions aeo;
+      aeo.text = content;
+      aeo.ad = ad;
+      aeo.tagLength = 8;
+      aeadSeal(ch->key, ch->lastSentNonce, aeo);
+      Xi::String res = ad;
+      res.pushVarLong((long long)ch->lastSentNonce);
+      res += aeo.tag;
+      res += aeo.text;
+      return res;
+    }
+    return ad + content;
+  }
+
+  ParseResult parse(const Xi::String &buf) {
+    ParseResult res;
+    if (buf.length < 4)
+      return res;
+    usz at = 0;
+    u8 header = buf[at++];
+    u32 cid = ((u32)buf[at] << 16) | ((u32)buf[at + 1] << 8) | (u32)buf[at + 2];
+    at += 3;
+
+    Xi::String ad = buf.begin(0, 4);
+    bool isSecure = (header & RAILWAY_SECURE) != 0;
+    bool isBroadcast = (header & RAILWAY_IS_BROADCAST) != 0;
+    bool hasMeta = (header & RAILWAY_HAS_META) != 0;
+
+    RailwayChannel *ch = get(cid);
+    if (isSecure && ch->key.length != 32)
+      return res;
+    if (!isBroadcast && !ch->isEnabled)
+      return res;
+
+    ch->lastReceivedTime = Xi::millis();
+
+    Xi::String plain;
+    if (isSecure) {
+      auto nRes = buf.peekVarLong(at);
+      if (nRes.error)
+        return res;
+      u64 nonce = (u64)nRes.value;
+      at += nRes.bytes;
+      if (at + 8 > buf.length)
+        return res;
+
+      if (nonce <= ch->slidePos) {
+        u64 diff = ch->slidePos - nonce;
+        if (diff >= (u64)windowBitmapSize)
+          return res;
+        if ((ch->bitmap[(int)(diff / 8)] >> (int)(diff % 8)) & 1)
+          return res;
+      }
+
+      Xi::AEADOptions aeo;
+      aeo.tag = buf.begin(at, at + 8);
+      at += 8;
+      aeo.text = buf.begin(at, buf.length);
+      aeo.ad = ad;
+      aeo.tagLength = 8;
+      if (!aeadOpen(ch->key, nonce, aeo))
+        return res;
+      plain = aeo.text;
+
+      if (nonce > ch->slidePos) {
+        u64 shift = nonce - ch->slidePos;
+        if (shift >= (u64)windowBitmapSize) {
+          for (usz i = 0; i < ch->bitmap.length; ++i)
+            ch->bitmap[i] = 0;
+        } else {
+          int bS = (int)(shift / 8), biS = (int)(shift % 8);
+          if (bS > 0) {
+            for (int i = (int)ch->bitmap.length - 1; i >= bS; --i)
+              ch->bitmap[i] = ch->bitmap[i - bS];
+            for (int i = 0; i < bS; ++i)
+              ch->bitmap[i] = 0;
+          }
+          if (biS > 0) {
+            for (int i = (int)ch->bitmap.length - 1; i > 0; --i)
+              ch->bitmap[i] =
+                  (ch->bitmap[i] << biS) | (ch->bitmap[i - 1] >> (8 - biS));
+            ch->bitmap[0] <<= biS;
+          }
         }
+        ch->slidePos = nonce;
+      }
+      ch->bitmap[(int)((ch->slidePos - nonce) / 8)] |=
+          (1 << (int)((ch->slidePos - nonce) % 8));
+    } else {
+      plain = buf.begin(at, buf.length);
+    }
 
-    public:
-        Railway()
-        {
-            windowBitmapSize = 64;
-            scanLength = 10;
-            destroyTimeout = 30000;
+    usz pAt = 0;
+    if (hasMeta && plain.length > 0) {
+      u64 mLen = Encoding::readVarLong(plain, pAt);
+      if (pAt + mLen <= plain.length) {
+        Xi::String blob = plain.begin(pAt, pAt + (usz)mLen);
+        pAt += (usz)mLen;
+        usz mAt = 0;
+        ch->meta.clear();
+        while (mAt < blob.length) {
+          u64 k = Encoding::readVarLong(blob, mAt);
+          u64 vL = Encoding::readVarLong(blob, mAt);
+          if (mAt + vL <= blob.length) {
+            ch->meta.put(k, blob.begin(mAt, mAt + (usz)vL));
+            mAt += (usz)vL;
+          } else
+            break;
         }
-
-        ~Railway() {}
-
-        void setWindowBitmap(int size)
-        {
-            if (size % 8 != 0 || size <= 0)
-                return;
-            this->windowBitmapSize = size;
-        }
-
-        int generate()
-        {
-            if (availableToGenerate.length == 0)
-            {
-                generateNewAvailableId();
-            }
-            int id = availableToGenerate.pop();
-            return id;
-        }
-
-        RailwayChannel *get(int channelId, const Xi::String &key = Xi::String())
-        {
-            if (!channels.has(channelId))
-            {
-                RailwayChannel newChannel;
-                newChannel.key = key;
-                newChannel.bitmap.alloc(this->windowBitmapSize / 8);
-
-                // Zero fill bitmap
-                for (int i = 0; i < this->windowBitmapSize / 8; ++i)
-                    newChannel.bitmap.push(0);
-
-                newChannel.slidePos = 0;
-                newChannel.lastSentNonce = 0;
-
-                channels.put(channelId, newChannel);
-
-                return channels.get(channelId);
-            }
-            else
-            {
-                RailwayChannel *ch = channels.get(channelId);
-                if (key.length > 0)
-                {
-                    ch->key = key;
-                }
-                return ch;
-            }
-        }
-
-        void onClose(int channelId)
-        {
-            // Hook for subclass or callback
-        }
-
-        void remove(int channelId)
-        {
-            if (channels.remove(channelId))
-            {
-                this->onClose(channelId);
-            }
-        }
-
-        Xi::String build(const RailwayPacket &pkt)
-        {
-            RailwayChannel *channel = this->get(pkt.channel);
-
-            const bool isSecure = (channel->key.length > 0);
-
-            // --- Construct Header (1 byte) ---
-            Xi::u8 header = 0;
-            if (isSecure)
-                header |= RAILWAY_SECURE;
-
-            // --- Serialize Metadata (Map) ---
-            Xi::String metaBytes;
-            // Serialize map: Key(VarLong) + Val(Prefixed)
-            for (auto &item : channel->meta)
-            {
-                metaBytes.pushVarLong((long long)item.key);
-                metaBytes.pushVarLong(item.value.length);
-                metaBytes += item.value;
-            }
-
-            Xi::String content;
-
-            if (channel->updateMeta || metaBytes.constantTimeEquals(channel->lastReceivedMeta))
-            {
-                // std::cout << "Mismatch: " << metaBytes.toDeci() << " vs: " << channel->lastReceivedMeta.toDeci() << "\n";
-                metaBytes.unshiftVarLong();
-                content += metaBytes;
-                header |= RAILWAY_HAS_META;
-                channel->updateMeta = false;
-
-                // std::cout << "Sending metadata..\n";
-            }
-
-            content += pkt.payload;
-
-            // --- Write Channel ID (3 bytes) ---
-            Xi::String channelIdBuf;
-            channelIdBuf.push((pkt.channel >> 16) & 0xFF);
-            channelIdBuf.push((pkt.channel >> 8) & 0xFF);
-            channelIdBuf.push(pkt.channel & 0xFF);
-
-            Xi::String ad;
-            ad.push(header);
-            ad += channelIdBuf;
-
-            channel->lastSentTime = Time::millis();
-
-            // --- Handle Encryption ---
-            if (isSecure)
-            {
-                channel->lastSentNonce++;
-                const Xi::u64 nonce = channel->lastSentNonce;
-
-                Xi::String nonceBytes;
-                nonceBytes.pushVarLong((long long)nonce);
-
-                // Xi::aeadSeal returns [Ciphertext][Tag] (concatenated)
-                // Railway wire format expects: AD + Nonce + Tag + Ciphertext
-                int tagLen = 8;
-
-                AEADOptions aeo = {content, ad, "", 8};
-
-                aeadSeal(channel->key, nonce, aeo);
-
-                return ad + nonceBytes + aeo.tag + aeo.text;
-            }
-            else
-            {
-                return ad + content;
-            }
-        }
-
-        RailwayPacket parse(const Xi::String &buf)
-        {
-            if (buf.length < 4)
-                return {0, Xi::String()};
-
-            usz cursor = 0;
-            const Xi::u8 *d = buf.data();
-
-            const Xi::u8 header = d[cursor++];
-            const u32 channelId = ((u32)d[cursor] << 16) | ((u32)d[cursor + 1] << 8) | (u32)d[cursor + 2];
-            cursor += 3;
-
-            // Maintain available pool
-            long long availIdx = availableToGenerate.find(channelId);
-            if (availIdx != -1)
-            {
-                availableToGenerate.remove((Xi::usz)availIdx);
-                generateNewAvailableId();
-            }
-
-            // AD is the first 4 bytes
-            Xi::String ad = buf.begin(0, 4);
-
-            const bool isSecure = (header & RAILWAY_SECURE) != 0;
-            const bool updatesMeta = (header & RAILWAY_HAS_META) != 0;
-
-            bool exists = channels.has(channelId);
-            if (isSecure && (!exists || channels.get(channelId)->key.length == 0))
-            {
-                return {0, Xi::String()}; // Cannot decrypt
-            }
-
-            RailwayChannel *channel = this->get(channelId);
-
-            if (channel == nullptr)
-            {
-                // Log the error or drop the packet
-                return {0, Xi::String()};
-            }
-
-            Xi::String decryptedData;
-
-            if (isSecure)
-            {
-                auto nonceRes = buf.peekVarLong(cursor);
-                if (nonceRes.error)
-                    return {0, Xi::String()};
-
-                const Xi::u64 nonce = (u64)nonceRes.value;
-                cursor += nonceRes.bytes;
-
-                int tagLen = 8;
-                if (cursor + tagLen > buf.length)
-                    return {0, Xi::String()};
-
-                // --- Replay Protection ---
-                if (nonce <= channel->slidePos)
-                {
-                    Xi::u64 diff = channel->slidePos - nonce;
-                    if (diff >= (Xi::u64)this->windowBitmapSize)
-                        return {0, Xi::String()}; // Too old
-                    int byteIndex = (int)(diff / 8);
-                    int bitIndex = (int)(diff % 8);
-                    if ((channel->bitmap[byteIndex] >> bitIndex) & 1)
-                        return {0, Xi::String()}; // Replay
-                }
-
-                Xi::String tag = buf.begin(cursor, cursor + 8);
-                cursor += 8; // Move the cursor past the tag
-
-                // 2. The ciphertext starts EXACTLY at the new cursor
-                // Ensure no hidden offset or 'tagLen' constant is interfering
-                Xi::String ciphertext = buf.begin(cursor, buf.length);
-
-                // 3. Prepare the options
-                AEADOptions aeo = {ciphertext, ad, tag, 8};
-
-                // This should now produce a DataToAuth that matches the Seal trace
-                bool success = aeadOpen(channel->key, nonce, aeo);
-
-                // DEBUG
-                // std::cout << "Verification: " << (success ? "PASS" : "FAIL") << std::endl;
-
-                if (!success)
-                { // Was "if (success)" which was wrong
-                    return {0, Xi::String()};
-                }
-
-                // 3. Extract the now-decrypted text
-                decryptedData = aeo.text;
-
-                // --- Update Sliding Window ---
-                if (nonce > channel->slidePos)
-                {
-                    Xi::u64 shift = nonce - channel->slidePos;
-                    if (shift >= (Xi::u64)this->windowBitmapSize)
-                    {
-                        // Reset all to 0
-                        for (Xi::usz i = 0; i < channel->bitmap.length; ++i)
-                            channel->bitmap[i] = 0;
-                    }
-                    else
-                    {
-                        // Manual bit shift logic for Array<u8>
-                        int byteShift = (int)(shift / 8);
-                        int bitShift = (int)(shift % 8);
-
-                        if (byteShift > 0)
-                        {
-                            int len = (int)channel->bitmap.length;
-                            for (int i = len - 1; i >= byteShift; --i)
-                            {
-                                channel->bitmap[i] = channel->bitmap[i - byteShift];
-                            }
-                            for (int i = 0; i < byteShift; ++i)
-                                channel->bitmap[i] = 0;
-                        }
-
-                        if (bitShift > 0)
-                        {
-                            int len = (int)channel->bitmap.length;
-                            for (int i = len - 1; i > 0; --i)
-                            {
-                                channel->bitmap[i] = (channel->bitmap[i] << bitShift) | (channel->bitmap[i - 1] >> (8 - bitShift));
-                            }
-                            channel->bitmap[0] <<= bitShift;
-                        }
-                    }
-                    channel->slidePos = nonce;
-                }
-
-                Xi::u64 newDiff = channel->slidePos - nonce;
-                int byteIndex = (int)(newDiff / 8);
-                int bitIndex = (int)(newDiff % 8);
-                channel->bitmap[byteIndex] |= (1 << bitIndex);
-            }
-            else
-            {
-                decryptedData = buf.begin(cursor, buf.length);
-            }
-
-            channel->lastReceivedTime = Time::millis();
-
-            usz dataCursor = 0;
-            if (updatesMeta && decryptedData.length > 0)
-            {
-                // Read meta container (prefixed buffer)
-                // Using manual peek/readVarLong logic combined with Xi::String
-                auto metaLenRes = decryptedData.peekVarLong(0);
-
-                if (!metaLenRes.error)
-                {
-                    usz metaTotalLen = (usz)metaLenRes.value;
-                    usz metaHeaderBytes = metaLenRes.bytes;
-
-                    if (metaHeaderBytes + metaTotalLen <= decryptedData.length)
-                    {
-                        Xi::String metaBlob = decryptedData.begin(metaHeaderBytes, metaHeaderBytes + metaTotalLen);
-
-                        channel->lastReceivedMeta = metaBlob;
-
-                        usz metaCursor = 0;
-
-                        channel->meta.clear();
-                        while (metaCursor < metaBlob.length)
-                        {
-                            auto keyRes = metaBlob.peekVarLong(metaCursor);
-                            if (keyRes.error)
-                                break;
-                            metaCursor += keyRes.bytes;
-                            u64 key = (u64)keyRes.value;
-
-                            auto valLenRes = metaBlob.peekVarLong(metaCursor);
-                            if (valLenRes.error)
-                                break;
-                            metaCursor += valLenRes.bytes;
-
-                            usz vLen = (usz)valLenRes.value;
-                            if (metaCursor + vLen > metaBlob.length)
-                                break;
-
-                            channel->meta.put(key, metaBlob.begin(metaCursor, metaCursor + vLen));
-                            metaCursor += vLen;
-
-                            // std::cout << "Put: " << key << " Value: " << metaBlob.begin(metaCursor, metaCursor + vLen) << "\n";
-                        }
-                        dataCursor += (metaHeaderBytes + metaTotalLen);
-                    }
-                }
-            }
-
-            Xi::String payload;
-            if (dataCursor < decryptedData.length)
-            {
-                payload = decryptedData.begin(dataCursor, decryptedData.length);
-            }
-
-            RailwayPacket pkt;
-            pkt.channel = channelId;
-            pkt.payload = payload;
-            return pkt;
-        }
-
-        void cleanOldRailwayChannels()
-        {
-            const Xi::u64 now = Time::millis();
-
-            Xi::Array<int> keysToRemove;
-            for (auto &entry : channels)
-            {
-                if (now - entry.value.lastReceivedTime > destroyTimeout)
-                {
-                    keysToRemove.push(entry.key);
-                }
-            }
-
-            for (auto k : keysToRemove)
-            {
-                remove(k);
-            }
-        }
-
-        void update()
-        {
-            cleanOldRailwayChannels();
-        }
-    };
-}
-
-#endif // RHO_RAILWAY_HPP
+      }
+    }
+
+    res.success = true;
+    res.channelID = cid;
+    res.channel = ch;
+    res.payload = plain.begin(pAt, plain.length);
+    return res;
+  }
+
+  void update() {
+    u64 now = Xi::millis();
+    Xi::Array<u32> toRem;
+    for (auto &it : channels) {
+      if (now - it.value.lastReceivedTime > destroyTimeout)
+        toRem.push(it.key);
+    }
+    for (u32 k : toRem)
+      remove(k);
+  }
+};
+} // namespace Xi
+#endif

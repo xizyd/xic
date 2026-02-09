@@ -1,25 +1,25 @@
 {
-  "name": "Xi",
+  "name": "xic",
   "version": "1.0.0",
   "description": "A library",
   "keywords": "esp32, mesh, udp, crypto, std",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xizyd/xicpp.git"
+    "url": "https://github.com/xizyd/xic.git"
   },
   "authors": [
     {
-      "name": "Xi",
+      "name": "Xi (Abderrahmene MERZOUG)",
       "maintainer": true
     }
   ],
   "build": {
     "flags": [
       "-Iinclude",
-      "-Isrc/external"
+      "-Ipackages/monocypher"
     ],
     "srcFilter": [
-      "+<src/external/monocypher.c>"
+      "+<packages/monocypher/monocypher.c>"
     ]
   }
 }
