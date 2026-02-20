@@ -6,274 +6,337 @@
 #include "../Xi/Func.hpp"
 #include "../Xi/Map.hpp"
 #include "../Xi/String.hpp"
-#include "../Xi/Time.hpp"
 
 namespace Xi {
+struct RawCart {
+  u8 header;
+  u64 nonce;
+  Xi::String hmac;
+  Xi::String cipherText;
+};
 
-static const unsigned char RAILWAY_SECURE = 0x01;
-static const unsigned char RAILWAY_IS_BROADCAST = 0x02;
-static const unsigned char RAILWAY_HAS_META = 0x04;
-
-class Railway {
+class RailwayStation {
 public:
-  struct RailwayPacket {
-    u32 channel;
-    Xi::String payload;
-  };
+  // Identity
+  Xi::String name = "Station";
 
-  struct RailwayChannel {
-    Xi::String key;
-    Xi::Array<Xi::u8> bitmap;
-    Xi::u64 slidePos = 0;
-    Xi::u64 lastSentNonce = 0;
-    Xi::u64 lastReceivedTime = 0;
-    Xi::u64 lastSentTime = 0;
-    String lastSentMeta;
-    bool updateMeta = false;
-    bool isEnabled = false;
-    Xi::Map<u64, Xi::String> meta;
-  };
+  // Routing State
+  u64 rail = 0;
+  bool anycast = false;
+  bool allDrain = false;
 
-  struct ParseResult {
-    bool success = false;
-    u32 channelID = 0;
-    RailwayChannel *channel = nullptr;
-    Xi::String payload;
-  };
+  // Stats
+  u64 lastSeen = 0;
+  u64 lastSent = 0;
 
-private:
-  Xi::Map<u32, RailwayChannel> channels;
-  Xi::Array<u32> availableToGenerate;
-  int windowBitmapSize = 64;
-  u64 destroyTimeout = 17000;
-  Xi::Func<void(RailwayChannel *, u32)> clearCallback;
+  // Encryption
+  bool isSecure = false;
+  Xi::String key;
+  u64 nonceCounter = 0;
+  u64 slidingWindow = 0;
 
-  void generateNewAvailableId() {
-    while (true) {
-      u32 id = (Xi::random(100000)) + 1;
-      if (channels.has(id))
-        continue;
-      if (availableToGenerate.find(id) != -1)
-        continue;
-      availableToGenerate.push(id);
+  // Collision Avoidance
+  Xi::Array<u64> availableRails;
+
+  // Meta
+  Xi::Map<u64, Xi::String> meta;
+  Xi::Map<u64, Xi::String> theirMeta;
+
+  // Topology
+  Xi::Array<RailwayStation *> parentStations;
+
+  static Xi::String serializeCart(u8 header, u64 nonce, const Xi::String &hmac,
+                                  const Xi::String &cipherText) {
+    Xi::String raw;
+    raw.push(header);
+    if ((header & 1) != 0) {
+      raw.pushVarLong((long long)nonce);
+      raw += hmac;
+    }
+    raw += cipherText;
+    return raw;
+  }
+
+  static RawCart deserializeCart(const Xi::String &raw) {
+    RawCart rc = {0, 0, Xi::String(), Xi::String()};
+    usz cursor = 0;
+    if (raw.size() == 0)
+      return rc;
+    rc.header = raw[cursor++];
+    if ((rc.header & 1) != 0) {
+      auto res = raw.peekVarLong(cursor);
+      if (!res.error) {
+        rc.nonce = (u64)res.value;
+        cursor += res.bytes;
+      }
+      if (cursor + 8 <= raw.length()) {
+        rc.hmac = raw.substring(cursor, cursor + 8);
+        cursor += 8;
+      }
+    }
+    if (cursor < raw.size()) {
+      rc.cipherText = raw.substring(cursor, raw.size());
+    }
+    return rc;
+  }
+
+  RailwayStation() {
+    anycast = false;
+    allDrain = true;
+    for (int i = 0; i < 10; i++) {
+      availableRails.push((u64)Xi::millis() + (u64)i * 12345ULL);
+    }
+  }
+
+  u64 enrail() {
+    if (availableRails.size() == 0)
+      return 0;
+    int idx = Xi::millis() % availableRails.size();
+    rail = availableRails[idx];
+    return rail;
+  }
+
+  // --- Listeners ---
+
+  Xi::Func<void(Xi::String, u64, RailwayStation *)> cartListener;
+  void onCart(Xi::Func<void(Xi::String, u64, RailwayStation *)> cb) {
+    cartListener = Xi::Move(cb);
+  }
+  void offCart() {
+    cartListener = Xi::Func<void(Xi::String, u64, RailwayStation *)>();
+  }
+
+  Xi::Func<void(u8, u64, Xi::String, Xi::String, RailwayStation *)>
+      rawCartListener;
+  void onRawCart(
+      Xi::Func<void(u8, u64, Xi::String, Xi::String, RailwayStation *)> cb) {
+    rawCartListener = Xi::Move(cb);
+  }
+  void offRawCart() {
+    rawCartListener =
+        Xi::Func<void(u8, u64, Xi::String, Xi::String, RailwayStation *)>();
+  }
+
+  Xi::Func<void(u8, u64, Xi::String, Xi::String, RailwayStation *)>
+      outboxRawCartListener;
+  void onOutboxRawCartListener(
+      Xi::Func<void(u8, u64, Xi::String, Xi::String, RailwayStation *)> cb) {
+    outboxRawCartListener = Xi::Move(cb);
+  }
+
+  // --- Topology ---
+
+  void addStation(RailwayStation &otherStation) {
+    parentStations.push(&otherStation);
+
+    otherStation.onCart([this](Xi::String data, u64 r, RailwayStation *origin) {
+      if (this->cartListener.isValid()) {
+        this->cartListener(data, r, origin);
+      }
+    });
+
+    otherStation.onRawCart([this](u8 header, u64 nonce, Xi::String hmac,
+                                  Xi::String cipherText,
+                                  RailwayStation *origin) {
+      this->pushRaw(header, nonce, hmac, cipherText, origin);
+    });
+  }
+
+  void removeStation(RailwayStation &otherStation) {
+    for (usz i = 0; i < parentStations.size(); ++i) {
+      if (parentStations[i] == &otherStation) {
+        parentStations.remove(i);
+        break;
+      }
+    }
+    otherStation.offCart();
+    otherStation.offRawCart();
+  }
+
+  // --- Sending ---
+
+  usz sendIndex = 0;
+
+  void pushOutboxRawCart(u8 header, u64 nonce, Xi::String hmac,
+                         Xi::String cipherText, RailwayStation *origin) {
+    if (outboxRawCartListener.isValid()) {
+      outboxRawCartListener(header, nonce, hmac, cipherText, origin);
+    } else if (parentStations.size() > 0) {
+      RailwayStation *target =
+          parentStations[sendIndex % parentStations.size()];
+      sendIndex++;
+      target->pushOutboxRawCart(header, nonce, hmac, cipherText, origin);
+    }
+  }
+
+  void push(Xi::String data) {
+    if (parentStations.size() == 0 && !outboxRawCartListener.isValid())
       return;
-    }
-  }
 
-public:
-  Railway() {}
-
-  void setWindowBitmap(int size) {
-    if (size > 0 && size % 8 == 0)
-      windowBitmapSize = size;
-  }
-  void setClearTimeout(u64 ms) { destroyTimeout = ms; }
-  void onClear(Xi::Func<void(RailwayChannel *, u32)> cb) {
-    clearCallback = Xi::Move(cb);
-  }
-
-  void enable(u32 channelId) {
-    RailwayChannel *ch = get(channelId);
-    if (ch)
-      ch->isEnabled = true;
-  }
-
-  int generate() {
-    if (availableToGenerate.length == 0)
-      generateNewAvailableId();
-    return availableToGenerate.pop();
-  }
-
-  RailwayChannel *get(int channelId, const Xi::String &key = Xi::String()) {
-    if (!channels.has(channelId)) {
-      RailwayChannel ch;
-      ch.key = key;
-      ch.bitmap.alloc(windowBitmapSize / 8);
-      for (int i = 0; i < windowBitmapSize / 8; ++i)
-        ch.bitmap.push(0);
-      ch.lastReceivedTime = Xi::millis();
-      channels.put(channelId, ch);
-      return channels.get(channelId);
-    }
-    RailwayChannel *ch = channels.get(channelId);
-    if (key.length > 0)
-      ch->key = key;
-    return ch;
-  }
-
-  void remove(int channelId) {
-    if (channels.has(channelId)) {
-      if (clearCallback.isValid())
-        clearCallback(channels.get(channelId), channelId);
-      channels.remove(channelId);
-    }
-  }
-
-  Xi::String build(const RailwayPacket &pkt) {
-    RailwayChannel *ch = get(pkt.channel);
-    bool isSecure = (ch->key.length == 32);
     u8 header = 0;
     if (isSecure)
-      header |= RAILWAY_SECURE;
-    if (!ch->isEnabled)
-      header |= RAILWAY_IS_BROADCAST;
+      header |= 1;
+    if (anycast)
+      header |= 4;
 
     Xi::String metaBlob;
-    for (auto &it : ch->meta) {
-      metaBlob.pushVarLong((long long)it.key);
-      metaBlob.pushVarLong(it.value.length);
-      metaBlob += it.value;
+    Xi::Map<u64, Xi::String> delta;
+    for (auto &kv : meta) {
+      const Xi::String *existing = theirMeta.get(kv.key);
+      if (existing && existing->constantTimeEquals(kv.value))
+        continue;
+      delta.put(kv.key, kv.value);
     }
 
-    Xi::String content;
-    if (ch->updateMeta || !metaBlob.constantTimeEquals(ch->lastSentMeta)) {
-      header |= RAILWAY_HAS_META;
-      content.pushVarLong((long long)metaBlob.length);
-      content += metaBlob;
-      ch->updateMeta = false;
-      ch->lastSentMeta = metaBlob;
+    if (delta.size() > 0) {
+      header |= 2;
+      delta.serialize(metaBlob);
     }
 
-    content += pkt.payload;
-    Xi::String ad;
-    ad.push(header);
-    ad.push((pkt.channel >> 16) & 0xFF);
-    ad.push((pkt.channel >> 8) & 0xFF);
-    ad.push(pkt.channel & 0xFF);
+    Xi::String boxedData;
+    boxedData.pushVarLong((long long)data.length());
+    boxedData += data;
 
-    ch->lastSentTime = Xi::millis();
+    Xi::String innerPayload = boxedData + metaBlob;
+
+    // <HeaderByte: Byte> <Nonce: VarLong if isSecure> <HMAC: 8 Bytes> <Rail:
+    // VarLong> { encryptedIfSecure: <Data: String> <Meta: Map> } The spec
+    // defines building the final raw cart as putting header, nonce, hmac, rail,
+    // inner payload. However, pushOutboxRawCart expects only header, nonce,
+    // hmac, cipherText. So cipherText must include Rail + InnerPayload in the
+    // final byte buffer going down, Or we modify pushOutboxRawCart to include
+    // Rail? "poly1305(HeaderByte + Nonce + Rail + Data + Meta)" Let's pack Rail
+    // + Data + Meta into `cipherText` for routing down.
+
+    Xi::String unencryptedInner;
+    unencryptedInner.pushVarLong((long long)rail);
+    unencryptedInner += innerPayload;
+
+    u64 usedNonce = 0;
+    Xi::String hmac;
+    Xi::String cipherText;
 
     if (isSecure) {
-      ch->lastSentNonce++;
-      Xi::AEADOptions aeo;
-      aeo.text = content;
-      aeo.ad = ad;
-      aeo.tagLength = 8;
-      aeadSeal(ch->key, ch->lastSentNonce, aeo);
-      Xi::String res = ad;
-      res.pushVarLong((long long)ch->lastSentNonce);
-      res += aeo.tag;
-      res += aeo.text;
-      return res;
+      usedNonce = ++nonceCounter;
+      Xi::AEADOptions opt;
+      opt.text = unencryptedInner;
+
+      opt.ad = Xi::String();
+      opt.ad += (char)header;
+      opt.ad.pushVarLong((long long)usedNonce);
+
+      opt.tagLength = 8;
+      if (Xi::aeadSeal(key, usedNonce, opt)) {
+        hmac = opt.tag;
+        cipherText = opt.text;
+      } else {
+        return; // Crypto error
+      }
+    } else {
+      cipherText = unencryptedInner;
+      hmac = Xi::String();
+      for (int i = 0; i < 8; i++)
+        hmac.push('\0');
     }
-    return ad + content;
+
+    lastSent = Xi::millis();
+    pushOutboxRawCart(header, usedNonce, hmac, cipherText, this);
   }
 
-  ParseResult parse(const Xi::String &buf) {
-    ParseResult res;
-    if (buf.length < 4)
-      return res;
-    usz at = 0;
-    u8 header = buf[at++];
-    u32 cid = ((u32)buf[at] << 16) | ((u32)buf[at + 1] << 8) | (u32)buf[at + 2];
-    at += 3;
+  // --- Receiving ---
 
-    Xi::String ad = buf.begin(0, 4);
-    bool isSecure = (header & RAILWAY_SECURE) != 0;
-    bool isBroadcast = (header & RAILWAY_IS_BROADCAST) != 0;
-    bool hasMeta = (header & RAILWAY_HAS_META) != 0;
+  void pushRaw(u8 header, u64 nonce, Xi::String hmac, Xi::String cipherText,
+               RailwayStation *origin) {
+    if (rawCartListener.isValid()) {
+      rawCartListener(header, nonce, hmac, cipherText, origin);
+    }
 
-    RailwayChannel *ch = get(cid);
-    if (isSecure && ch->key.length != 32)
-      return res;
-    if (!isBroadcast && !ch->isEnabled)
-      return res;
-
-    ch->lastReceivedTime = Xi::millis();
+    bool cartIsSecure = (header & 1) != 0;
+    bool cartHasMeta = (header & 2) != 0;
+    bool cartAnycast = (header & 4) != 0;
 
     Xi::String plain;
+
     if (isSecure) {
-      auto nRes = buf.peekVarLong(at);
-      if (nRes.error)
-        return res;
-      u64 nonce = (u64)nRes.value;
-      at += nRes.bytes;
-      if (at + 8 > buf.length)
-        return res;
+      if (!cartIsSecure)
+        return;
 
-      if (nonce <= ch->slidePos) {
-        u64 diff = ch->slidePos - nonce;
-        if (diff >= (u64)windowBitmapSize)
-          return res;
-        if ((ch->bitmap[(int)(diff / 8)] >> (int)(diff % 8)) & 1)
-          return res;
+      Xi::AEADOptions opt;
+      opt.text = cipherText;
+      opt.tag = hmac;
+      opt.tagLength = 8;
+
+      opt.ad = Xi::String();
+      opt.ad += (char)header;
+      opt.ad.pushVarLong((long long)nonce);
+
+      if (Xi::aeadOpen(key, nonce, opt)) {
+        plain = opt.text;
+      } else {
+        return; // HMAC failed
       }
-
-      Xi::AEADOptions aeo;
-      aeo.tag = buf.begin(at, at + 8);
-      at += 8;
-      aeo.text = buf.begin(at, buf.length);
-      aeo.ad = ad;
-      aeo.tagLength = 8;
-      if (!aeadOpen(ch->key, nonce, aeo))
-        return res;
-      plain = aeo.text;
-
-      if (nonce > ch->slidePos) {
-        u64 shift = nonce - ch->slidePos;
-        if (shift >= (u64)windowBitmapSize) {
-          for (usz i = 0; i < ch->bitmap.length; ++i)
-            ch->bitmap[i] = 0;
-        } else {
-          int bS = (int)(shift / 8), biS = (int)(shift % 8);
-          if (bS > 0) {
-            for (int i = (int)ch->bitmap.length - 1; i >= bS; --i)
-              ch->bitmap[i] = ch->bitmap[i - bS];
-            for (int i = 0; i < bS; ++i)
-              ch->bitmap[i] = 0;
-          }
-          if (biS > 0) {
-            for (int i = (int)ch->bitmap.length - 1; i > 0; --i)
-              ch->bitmap[i] =
-                  (ch->bitmap[i] << biS) | (ch->bitmap[i - 1] >> (8 - biS));
-            ch->bitmap[0] <<= biS;
-          }
-        }
-        ch->slidePos = nonce;
-      }
-      ch->bitmap[(int)((ch->slidePos - nonce) / 8)] |=
-          (1 << (int)((ch->slidePos - nonce) % 8));
     } else {
-      plain = buf.begin(at, buf.length);
+      plain = cipherText;
     }
 
-    usz pAt = 0;
-    if (hasMeta && plain.length > 0) {
-      u64 mLen = Encoding::readVarLong(plain, pAt);
-      if (pAt + mLen <= plain.length) {
-        Xi::String blob = plain.begin(pAt, pAt + (usz)mLen);
-        pAt += (usz)mLen;
-        usz mAt = 0;
-        ch->meta.clear();
-        while (mAt < blob.length) {
-          u64 k = Encoding::readVarLong(blob, mAt);
-          u64 vL = Encoding::readVarLong(blob, mAt);
-          if (mAt + vL <= blob.length) {
-            ch->meta.put(k, blob.begin(mAt, mAt + (usz)vL));
-            mAt += (usz)vL;
-          } else
-            break;
-        }
+    if (plain.size() == 0)
+      return;
+
+    usz cursor = 0;
+    auto railRes = plain.peekVarLong(cursor);
+    if (railRes.error)
+      return;
+    u64 cartRail = (u64)railRes.value;
+    cursor += railRes.bytes;
+
+    // Filter
+    bool accept = false;
+    if (this->rail == 0) {
+      if (!cartAnycast || this->allDrain)
+        accept = true;
+    } else {
+      if (this->rail == cartRail &&
+          (this->anycast == cartAnycast || this->allDrain))
+        accept = true;
+    }
+
+    if (!accept)
+      return;
+
+    // Collision avoidance update
+    for (usz i = 0; i < availableRails.size(); ++i) {
+      if (availableRails[i] == cartRail) {
+        availableRails.remove(i);
+        availableRails.push((u64)Xi::millis() + 1337);
+        break;
       }
     }
 
-    res.success = true;
-    res.channelID = cid;
-    res.channel = ch;
-    res.payload = plain.begin(pAt, plain.length);
-    return res;
-  }
-
-  void update() {
-    u64 now = Xi::millis();
-    Xi::Array<u32> toRem;
-    for (auto &it : channels) {
-      if (now - it.value.lastReceivedTime > destroyTimeout)
-        toRem.push(it.key);
+    auto sizeRes = plain.peekVarLong(cursor);
+    if (sizeRes.error)
+      return;
+    cursor += sizeRes.bytes;
+    u64 dataSize = (u64)sizeRes.value;
+    Xi::String decodedData;
+    if (cursor + (usz)dataSize <= plain.length()) {
+      decodedData = plain.substring(cursor, cursor + (usz)dataSize);
+      cursor += (usz)dataSize;
     }
-    for (u32 k : toRem)
-      remove(k);
+
+    if (cartHasMeta && cursor < plain.length()) {
+      auto decodedMeta = Xi::Map<u64, Xi::String>::deserialize(plain, cursor);
+      for (auto &kv : decodedMeta) {
+        theirMeta.put(kv.key, kv.value);
+      }
+    }
+
+    lastSeen = Xi::millis();
+    if (cartListener.isValid()) {
+      cartListener(decodedData, cartRail, origin);
+    }
   }
 };
+
 } // namespace Xi
+
 #endif

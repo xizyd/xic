@@ -19,7 +19,8 @@
       "-Ipackages/monocypher"
     ],
     "srcFilter": [
-      "+<packages/monocypher/monocypher.c>"
+      "+<packages/monocypher/monocypher.c>",
+      "+<*>"
     ]
   }
 }

@@ -99,16 +99,19 @@ static constexpr f64 PI = 3.14159265358979323846;
 #endif
 static constexpr f64 E = 2.71828182845904523536;
 
-#define FNV_OFFSET 14695981039346656037ULL
-#define FNV_PRIME 1099511628211ULL
-
 template <typename T> struct FNVHasher {
   static usz fnvHash(const T &key) {
     const char *ptr = (const char *)&key;
-    usz fnvHash = FNV_OFFSET;
+#if __SIZEOF_POINTER__ == 8
+    usz fnvHash = 14695981039346656037ULL;
+    const usz prime = 1099511628211ULL;
+#else
+    usz fnvHash = 2166136261U;
+    const usz prime = 16777619U;
+#endif
     for (usz i = 0; i < sizeof(T); ++i) {
-      fnvHash ^= (usz)ptr[i];
-      fnvHash *= FNV_PRIME;
+      fnvHash ^= (usz)((u8)ptr[i]);
+      fnvHash *= prime;
     }
     return fnvHash;
   }
@@ -118,21 +121,37 @@ template <typename T> struct FNVHasher {
 template <typename T> struct FNVHasher<T *> {
   static usz fnvHash(T *key) {
     usz k = (usz)key;
+#if __SIZEOF_POINTER__ == 8
     k ^= k >> 33;
     k *= 0xff51afd7ed558ccdULL;
     k ^= k >> 33;
     k *= 0xc4ceb9fe1a85ec53ULL;
     k ^= k >> 33;
+#else
+    k ^= k >> 16;
+    k *= 0x85ebca6b;
+    k ^= k >> 13;
+    k *= 0xc2b2ae35;
+    k ^= k >> 16;
+#endif
     return k;
   }
 };
 
-static inline usz fnvHash64(usz k) {
+static inline usz fnvHashMix(usz k) {
+#if __SIZEOF_POINTER__ == 8
   k ^= k >> 33;
   k *= 0xff51afd7ed558ccdULL;
   k ^= k >> 33;
   k *= 0xc4ceb9fe1a85ec53ULL;
   k ^= k >> 33;
+#else
+  k ^= k >> 16;
+  k *= 0x85ebca6b;
+  k ^= k >> 13;
+  k *= 0xc2b2ae35;
+  k ^= k >> 16;
+#endif
   return k;
 };
 
@@ -176,26 +195,36 @@ static inline i64 micros() {
 }
 
 // Global Epoch Offset (controlled by Spatial / Time Sync)
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
 static inline i64 systemStartMicros = 0;
+#else
+static i64 systemStartMicros = 0;
+#endif
 
 template <> struct FNVHasher<u32> {
-  static usz fnvHash(const u32 &k) { return fnvHash64((usz)k); }
+  static usz fnvHash(const u32 &k) { return fnvHashMix((usz)k); }
 };
 
 template <> struct FNVHasher<int> {
-  static usz fnvHash(const int &k) { return fnvHash64((usz)k); }
+  static usz fnvHash(const int &k) { return fnvHashMix((usz)k); }
 };
 
 template <> struct FNVHasher<u64> {
-  static usz fnvHash(const u64 &k) { return fnvHash64((usz)k); }
+  static usz fnvHash(const u64 &k) { return fnvHashMix((usz)k); }
 };
 
 template <> struct FNVHasher<const char *> {
   static usz fnvHash(const char *key) {
-    usz fnvHash = FNV_OFFSET;
+#if __SIZEOF_POINTER__ == 8
+    usz fnvHash = 14695981039346656037ULL;
+    const usz prime = 1099511628211ULL;
+#else
+    usz fnvHash = 2166136261U;
+    const usz prime = 16777619U;
+#endif
     while (*key) {
-      fnvHash ^= (usz)(*key++);
-      fnvHash *= FNV_PRIME;
+      fnvHash ^= (usz)((u8)*key++);
+      fnvHash *= prime;
     }
     return fnvHash;
   }

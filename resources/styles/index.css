@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@import "@fontsource/montserrat";
+
+@theme {
+  --font-sans: "Montserrat", ui-sans-serif, system-ui;
+}

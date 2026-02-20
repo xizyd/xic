@@ -37,7 +37,7 @@ namespace Xi
                 onUpdate();
 
             // If CPU data is already present, just return it
-            if (localData.length > 0)
+            if (localData.size() > 0)
             {
                 isLocked = true;
                 return &localData;
@@ -71,7 +71,7 @@ namespace Xi
                 onUpdate();
 
             // If View is empty but we have CPU data, upload it
-            if (!pView && localData.length > 0)
+            if (!pView && localData.size() > 0)
             {
                 touchGPU();
             }
@@ -121,16 +121,16 @@ namespace Xi
             const void *pDataToUpload = nullptr;
             Array<u8> blackPadding;
 
-            if (localData.length >= requiredSize)
+            if (localData.size() >= requiredSize)
             {
                 pDataToUpload = localData.data();
             }
             else
             {
-                blackPadding.alloc(requiredSize);
-                if (localData.length > 0)
+                blackPadding.allocate(requiredSize);
+                if (localData.size() > 0)
                 {
-                    for (usz i = 0; i < localData.length; ++i)
+                    for (usz i = 0; i < localData.size(); ++i)
                         blackPadding[i] = (u8)localData[i];
                 }
                 pDataToUpload = blackPadding.data();

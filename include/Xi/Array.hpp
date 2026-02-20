@@ -1,826 +1,363 @@
 #ifndef XI_ARRAY_HPP
-#define XI_ARRAY_HPP 1
+#define XI_ARRAY_HPP
 
-#include "Primitives.hpp"
-#include <cstdio> // For printf safety check
+#include "InlineArray.hpp"
 
-// Small allocation block size.
-#if defined(AVR) || defined(ARDUINO)
-#define XI_ARRAY_MIN_CAP 4
-#else
-#define XI_ARRAY_MIN_CAP 16
-#endif
+namespace Xi {
 
-namespace Xi
-{
-    // -------------------------------------------------------------------------
-    // ArrayFragment
-    // Ref-counted block of memory.
-    // -------------------------------------------------------------------------
-    template <typename T>
-    struct ArrayFragment
+/**
+ * @brief A sparse array implementation using InlineArray fragments.
+ *
+ * Manages a collection of InlineArray fragments to support sparse data
+ * storage efficiently.
+ *
+ * @tparam T Element type.
+ */
+template <typename T> class Array {
+public:
+  InlineArray<InlineArray<T>> fragments;
+
+  Array() {}
+
+  // -------------------------------------------------------------------------
+  // Management
+  // -------------------------------------------------------------------------
+
+  /**
+   * @brief Resize the array (specifically the last fragment) to support length.
+   * @param len New total length required.
+   * @return true if successful.
+   */
+  bool allocate(usz len) {
+    if (fragments.size() == 0) {
+      if (len == 0)
+        return true;
+      InlineArray<T> chunk;
+      if (!chunk.allocate(len))
+        return false;
+      chunk.offset = 0; // First chunk starts at 0
+      fragments.push(Xi::Move(chunk));
+      return true;
+    }
+
+    while (fragments.size() > 0) {
+      InlineArray<T> &last = fragments.data()[fragments.size() - 1];
+      usz start = last.offset;
+
+      if (len > start) {
+        usz new_local_len = len - start;
+        return last.allocate(new_local_len);
+      } else if (len == start) {
+        fragments.pop();
+      } else {
+        fragments.pop();
+      }
+    }
+
+    if (len > 0 && fragments.size() == 0) {
+      InlineArray<T> chunk;
+      chunk.allocate(len);
+      chunk.offset = 0;
+      fragments.push(Xi::Move(chunk));
+    }
+    return true;
+  }
+
+  /**
+   * @brief Flatten all fragments into a single contiguous array.
+   * @return Pointer to the beginning of the contiguous data.
+   */
+  T *data() {
+    if (fragments.size() == 0)
+      return nullptr;
+    if (fragments.size() == 1) {
+      InlineArray<T> &f = fragments.data()[0];
+      if (f.offset == 0)
+        return f.data();
+    }
+
+    InlineArray<T> &last = fragments.data()[fragments.size() - 1];
+    usz total_len = last.offset + last.size();
+
+    InlineArray<T> flat;
+    if (!flat.allocate(total_len))
+      return nullptr;
+
+    T *dst = flat.data();
+
+    for (usz i = 0; i < fragments.size(); ++i) {
+      InlineArray<T> &f = fragments.data()[i];
+      const T *src = f.data();
+      usz count = f.size();
+      usz start = f.offset;
+      for (usz k = 0; k < count; ++k) {
+        dst[start + k] = src[k];
+      }
+    }
+
+    InlineArray<InlineArray<T>> new_frags;
+    flat.offset = 0;
+    new_frags.push(Xi::Move(flat));
+    fragments = Xi::Move(new_frags);
+
+    return fragments.data()[0].data();
+  }
+
+  /**
+   * @brief Split a fragment at the specified global index.
+   * @param at Global index to split at.
+   */
+  void break_at(usz at) {
+    for (long long i = 0; i < (long long)fragments.size(); ++i) {
+      InlineArray<T> &f = fragments.data()[i];
+      usz start = f.offset;
+      usz end = start + f.size();
+
+      if (at > start && at < end) {
+        usz rel = at - start;
+        InlineArray<T> suff = f.begin(rel);
+        f.allocate(rel);
+
+        fragments.push(InlineArray<T>());
+        for (long long k = fragments.size() - 1; k > i + 1; --k) {
+          fragments.data()[(usz)k] = Xi::Move(fragments.data()[(usz)k - 1]);
+        }
+        fragments.data()[i + 1] = Xi::Move(suff);
+        return;
+      }
+    }
+  }
+
+  /**
+   * @brief Remove a range of elements (shifting subsequent elements).
+   * @param start Global start index.
+   * @param length Number of elements to remove.
+   */
+  void splice(usz start, usz length) {
+    if (length == 0)
+      return;
+    usz end = start + length;
+
+    InlineArray<InlineArray<T>> new_frags;
+
+    for (usz i = 0; i < fragments.size(); ++i) {
+      InlineArray<T> &f = fragments.data()[i];
+      usz f_start = f.offset;
+      usz f_end = f_start + f.size();
+
+      if (f_end <= start) {
+        new_frags.push(Xi::Move(f));
+      } else if (f_start >= end) {
+        f.offset -= length;
+        new_frags.push(Xi::Move(f));
+      } else {
+        // Overlap
+        if (f_start < start) {
+          usz keep_len = start - f_start;
+          InlineArray<T> p1 = f.begin(0, keep_len);
+          new_frags.push(Xi::Move(p1));
+        }
+
+        if (f_end > end) {
+          usz skip = end - f_start;
+          InlineArray<T> p2 =
+              f.begin(skip); // offset becomes f.offset + skip = end
+          p2.offset = start;
+          new_frags.push(Xi::Move(p2));
+        }
+      }
+    }
+    fragments = Xi::Move(new_frags);
+  }
+
+  T &operator[](usz i) {
+    long long best_ext = -1;
+    long long best_pre = -1;
+
+    for (usz k = 0; k < fragments.size(); ++k) {
+      InlineArray<T> &f = fragments[k];
+      if (f.has(i))
+        return f[i - f.offset];
+
+      usz end = f.offset + f.size();
+      if (i == end)
+        best_ext = k;
+      if (f.offset > 0 && i == f.offset - 1)
+        best_pre = k;
+    }
+
+    if (best_ext != -1) {
+      InlineArray<T> &f = fragments[best_ext];
+      f.push(T());
+      return f[i - f.offset];
+    }
+
+    if (best_pre != -1) {
+      InlineArray<T> &f = fragments[best_pre];
+      f.unshift(T());
+      f.offset--;
+      return f[i - f.offset];
+    }
+
+    InlineArray<T> chunk;
+    chunk.allocate(1);
+    chunk.offset = i;
+
+    // Insert Sorted
+    usz pos = 0;
+    while (pos < fragments.size() && fragments[pos].offset < i)
+      pos++;
+
     {
-        T *allocation;
-        usz capacity;
-        T *data;
-        usz length;
-        usz *useCount;
+      // Manual insertion into fragments because InlineArray doesn't have
+      // insert()
+      fragments.push(InlineArray<T>());
+      for (long long k = fragments.size() - 1; k > (long long)pos; --k) {
+        fragments[(usz)k] = Xi::Move(fragments[(usz)k - 1]);
+      }
+      fragments[pos] = Xi::Move(chunk);
+    }
+    return fragments[pos][0];
+  }
+
+  const T &operator[](usz i) const {
+    for (usz k = 0; k < fragments.size(); ++k) {
+      const InlineArray<T> &f = fragments[k];
+      if (f.has(i))
+        return f[i - f.offset];
+    }
+    static T dummy;
+    return dummy;
+  }
+
+  usz size() const {
+    if (fragments.size() == 0)
+      return 0;
+    const InlineArray<T> &last = fragments.data()[fragments.size() - 1];
+    return last.offset + last.size();
+  }
+
+  usz length() const { return size(); }
+
+  void push(const T &val) {
+    if (fragments.size() > 0) {
+      fragments.data()[fragments.size() - 1].push(val);
+    } else {
+      InlineArray<T> chunk;
+      chunk.offset = 0;
+      chunk.push(val);
+      fragments.push(Xi::Move(chunk));
+    }
+  }
+
+  T shift() {
+    if (fragments.size() == 0)
+      return T();
+    InlineArray<T> &f = fragments.data()[0];
+    T val = f.shift();
+    if (f.size() == 0) {
+      fragments.shift();
+    }
+
+    for (usz i = 0; i < fragments.size(); ++i) {
+      if (fragments.data()[i].offset > 0)
+        fragments.data()[i].offset--;
+    }
+    return val;
+  }
+
+  void unshift(const T &val) {
+    if (fragments.size() == 0) {
+      InlineArray<T> chunk;
+      chunk.offset = 0;
+      chunk.push(val);
+      fragments.push(Xi::Move(chunk));
+      return;
+    }
+    InlineArray<T> &f = fragments.data()[0];
+    if (f.offset > 0) {
+      f.unshift(val);
+      f.offset--;
+    } else {
+      f.unshift(val);
+    }
+    for (usz i = 1; i < fragments.size(); ++i) {
+      fragments.data()[i].offset++;
+    }
+  }
+
+  T pop() {
+    if (fragments.size() == 0)
+      return T();
+    InlineArray<T> &last = fragments.data()[fragments.size() - 1];
+    T val = last.pop();
+    if (last.size() == 0) {
+      fragments.pop();
+    }
+    return val;
+  }
+
+  long long find(const T &val) const {
+    for (usz i = 0; i < fragments.size(); ++i) {
+      const InlineArray<T> &f = fragments.data()[i];
+      long long idx = f.indexOf(val);
+      if (idx != -1)
+        return idx;
+    }
+    return -1;
+  }
+
+  void remove(usz index) { splice(index, 1); }
+
+  void clear() { fragments = InlineArray<InlineArray<T>>(); }
 
-        static ArrayFragment *create(usz needed_cap, usz start_offset = 0)
-        {
-            ArrayFragment *f = new ArrayFragment();
+  // -------------------------------------------------------------------------
+  // Iterators
+  // -------------------------------------------------------------------------
 
-            usz cap = needed_cap + start_offset;
-            if (cap < XI_ARRAY_MIN_CAP)
-                cap = XI_ARRAY_MIN_CAP;
+  struct Iterator {
+    Array<T> *arr;
+    usz globalIdx;
 
-            f->capacity = cap;
-            // Use global new to avoid constructor overhead for T
-            f->allocation = (T *)::operator new(sizeof(T) * cap);
-            f->useCount = new usz(1);
+    Iterator(Array<T> *a, usz idx) : arr(a), globalIdx(idx) {}
 
-            // Safety clamp
-            if (start_offset > cap)
-                start_offset = cap;
+    bool operator!=(const Iterator &o) const {
+      return globalIdx != o.globalIdx || arr != o.arr;
+    }
 
-            f->data = f->allocation + start_offset;
-            f->length = 0;
-            return f;
-        }
+    Iterator &operator++() {
+      globalIdx++;
+      return *this;
+    }
 
-        ArrayFragment *clone()
-        {
-            ArrayFragment *cp = create(length, 0);
-            for (usz i = 0; i < length; ++i)
-            {
-                new (&cp->data[i]) T(data[i]);
-            }
-            cp->length = length;
-            return cp;
-        }
+    T &operator*() { return (*arr)[globalIdx]; }
+  };
 
-        inline void retain()
-        {
-            if (useCount)
-                (*useCount)++;
-        }
+  struct ConstIterator {
+    const Array<T> *arr;
+    usz globalIdx;
 
-        inline bool release()
-        {
-            if (!useCount)
-                return true; // Already null
+    ConstIterator(const Array<T> *a, usz idx) : arr(a), globalIdx(idx) {}
 
-            // CHECK FOR GARBAGE POINTER
-            // If useCount is 0xDEADBEEF, we are reading freed memory.
-            if ((usz)useCount == 0xDEADBEEFDEADBEEF)
-            {
-                fprintf(stderr, "FATAL: Accessing freed fragment %p\n", this);
-                __builtin_trap();
-            }
+    bool operator!=(const ConstIterator &o) const {
+      return globalIdx != o.globalIdx || arr != o.arr;
+    }
 
-            if (*useCount == 0)
-            {
-                fprintf(stderr, "FATAL: Double free on fragment %p\n", this);
-                return true;
-            }
+    ConstIterator &operator++() {
+      globalIdx++;
+      return *this;
+    }
 
-            if (--(*useCount) == 0)
-            {
-                // ... destructor loop ...
-                if (allocation)
-                    ::operator delete(allocation);
+    const T &operator*() const { return (*arr)[globalIdx]; }
+  };
 
-                // POISON THE MEMORY
-                *useCount = 0xDEADBEEF;
-                delete useCount;
+  Iterator begin() { return Iterator(this, 0); }
+  Iterator end() { return Iterator(this, size()); }
 
-                useCount = nullptr;
-                allocation = nullptr;
-                delete this;
-                return true;
-            }
-            return false;
-        }
+  ConstIterator begin() const { return ConstIterator(this, 0); }
+  ConstIterator end() const { return ConstIterator(this, size()); }
+};
 
-        inline usz tail_room() const
-        {
-            const T *end_alloc = allocation + capacity;
-            const T *end_data = data + length;
-            if (end_data >= end_alloc)
-                return 0;
-            return (usz)(end_alloc - end_data);
-        }
-
-        inline usz head_room() const
-        {
-            if (data <= allocation)
-                return 0;
-            return (usz)(data - allocation);
-        }
-    };
-
-    // -------------------------------------------------------------------------
-    // ArrayUse
-    // Handle to a fragment. Rule of 5 implemented.
-    // -------------------------------------------------------------------------
-    template <typename T>
-    struct ArrayUse
-    {
-        ArrayFragment<T> *fragment;
-        usz at;
-        bool own;
-        bool reverse;
-
-        // Default initialization to nulls is CRITICAL for raw memory safety
-        ArrayUse() : fragment(nullptr), at(0), own(true), reverse(false) {}
-
-        ~ArrayUse()
-        {
-            if (own && fragment)
-                fragment->release();
-            fragment = nullptr;
-        }
-
-        ArrayUse(const ArrayUse &o) : fragment(o.fragment), at(o.at), own(o.own), reverse(o.reverse)
-        {
-            if (own && fragment)
-                fragment->retain();
-        }
-
-        ArrayUse(ArrayUse &&o) noexcept : fragment(o.fragment), at(o.at), own(o.own), reverse(o.reverse)
-        {
-            o.fragment = nullptr;
-            o.own = false;
-            o.at = 0;
-        }
-
-        ArrayUse &operator=(const ArrayUse &o)
-        {
-            if (this == &o)
-                return *this;
-            if (o.own && o.fragment)
-                o.fragment->retain();
-            if (own && fragment)
-                fragment->release();
-
-            fragment = o.fragment;
-            at = o.at;
-            own = o.own;
-            reverse = o.reverse;
-            return *this;
-        }
-
-        ArrayUse &operator=(ArrayUse &&o) noexcept
-        {
-            if (this == &o)
-                return *this;
-            if (own && fragment)
-                fragment->release();
-
-            fragment = o.fragment;
-            at = o.at;
-            own = o.own;
-            reverse = o.reverse;
-
-            o.fragment = nullptr;
-            o.own = false;
-            o.at = 0;
-            return *this;
-        }
-    };
-
-    // -------------------------------------------------------------------------
-    // Array
-    // -------------------------------------------------------------------------
-    template <typename T>
-    class Array
-    {
-    public:
-        // UseList: Uses new[]/delete[] for safety.
-        struct UseList
-        {
-            ArrayUse<T> *list;
-            usz count;
-            usz cap;
-
-            UseList() : list(nullptr), count(0), cap(0) {}
-
-            ~UseList()
-            {
-                // Manually destroy only the active objects
-                for (usz i = 0; i < count; ++i)
-                {
-                    list[i].~ArrayUse();
-                }
-                // Free raw memory
-                if (list)
-                    ::operator delete(list);
-            }
-
-            void clear()
-            {
-                if (list)
-                {
-                    for (usz i = 0; i < count; ++i)
-                        list[i].~ArrayUse();
-                }
-                count = 0;
-            }
-
-            void reserve(usz n)
-            {
-                if (n <= cap)
-                    return;
-                usz newCap = (n < 4) ? 4 : n;
-
-                ArrayUse<T> *newList = (ArrayUse<T> *)::operator new(sizeof(ArrayUse<T>) * newCap);
-
-                // FIX: Zero-init to ensure no garbage pointers exist
-                memset(newList, 0, sizeof(ArrayUse<T>) * newCap);
-
-                for (usz i = 0; i < count; ++i)
-                {
-                    new (&newList[i]) ArrayUse<T>(Xi::Move(list[i]));
-                    list[i].~ArrayUse();
-                }
-
-                if (list)
-                    ::operator delete(list);
-                list = newList;
-                cap = newCap;
-            }
-
-            void push(ArrayUse<T> u)
-            {
-                if (count == cap)
-                    reserve(cap == 0 ? 4 : cap * 2);
-
-                // CRITICAL FIX: Use placement new. DO NOT USE ASSIGNMENT.
-                // Assignment reads uninitialized 'own/fragment' flags and crashes.
-                new (&list[count++]) ArrayUse<T>(Xi::Move(u));
-            }
-
-            void insert(usz idx, ArrayUse<T> u)
-            {
-                if (count == cap)
-                    reserve(cap == 0 ? 4 : cap * 2);
-
-                if (idx < count)
-                {
-                    // 1. Move construct last element into raw slot
-                    new (&list[count]) ArrayUse<T>(Xi::Move(list[count - 1]));
-
-                    // 2. Move assign the overlapping middle section (these are valid objects)
-                    for (usz i = count - 1; i > idx; --i)
-                    {
-                        list[i] = Xi::Move(list[i - 1]);
-                    }
-
-                    // 3. Assign new value to the hole (valid object)
-                    list[idx] = Xi::Move(u);
-                }
-                else
-                {
-                    // Appending to end: Use placement new
-                    new (&list[idx]) ArrayUse<T>(Xi::Move(u));
-                }
-                count++;
-            }
-
-            void remove(usz idx)
-            {
-                if (idx >= count)
-                    return;
-
-                // Move everything down
-                for (usz i = idx; i < count - 1; ++i)
-                {
-                    list[i] = Xi::Move(list[i + 1]);
-                }
-
-                // Explicitly destroy the last element which is now valid but unused
-                list[count - 1].~ArrayUse();
-                count--;
-            }
-
-            inline ArrayUse<T> &operator[](usz i) { return list[i]; }
-            inline const ArrayUse<T> &operator[](usz i) const { return list[i]; }
-        };
-
-        UseList uses;
-        usz length;
-
-        void recompute()
-        {
-            usz g = 0;
-            for (usz i = 0; i < uses.count; ++i)
-            {
-                uses[i].at = g;
-                if (uses[i].fragment)
-                    g += uses[i].fragment->length;
-            }
-            length = g;
-        }
-
-    private:
-        void ensure_unique(usz useIdx)
-        {
-            if (useIdx >= uses.count)
-                return;
-            ArrayUse<T> &u = uses[useIdx];
-            if (u.fragment && *u.fragment->useCount > 1)
-            {
-                ArrayFragment<T> *c = u.fragment->clone();
-                u.fragment->release();
-                u.fragment = c;
-            }
-        }
-        usz find_use_index(usz global, usz &offset) const
-        {
-            if (uses.count == 0)
-                return (usz)-1;
-
-            for (usz i = 0; i < uses.count; ++i)
-            {
-                ArrayFragment<T> *f = uses[i].fragment;
-                if (!f)
-                    continue;
-
-                usz start = uses[i].at;
-                usz end = start + f->length;
-
-                if (global >= start && global < end)
-                {
-                    offset = global - start;
-                    return i;
-                }
-            }
-            return (usz)-1;
-        }
-
-    public:
-        Array() : length(0) {}
-
-        // Virtual Destructor ensures ABI compatibility for polymorphic types
-        virtual ~Array() {}
-
-        Array(const Array &o) : length(o.length)
-        {
-            uses.reserve(o.uses.count);
-            for (usz i = 0; i < o.uses.count; ++i)
-                uses.push(o.uses[i]);
-        }
-
-        Array(Array &&o) noexcept : length(o.length)
-        {
-            uses.list = o.uses.list;
-            uses.count = o.uses.count;
-            uses.cap = o.uses.cap;
-
-            o.uses.list = nullptr;
-            o.uses.count = 0;
-            o.uses.cap = 0;
-            o.length = 0;
-        }
-
-        Array &operator=(const Array &o)
-        {
-            if (this == &o)
-                return *this;
-            uses.clear();
-            uses.reserve(o.uses.count);
-            for (usz i = 0; i < o.uses.count; ++i)
-            {
-                uses.push(o.uses[i]);
-            }
-            length = o.length;
-            return *this;
-        }
-
-        // Explicit Move Assignment
-        Array &operator=(Array &&o) noexcept
-        {
-            if (this == &o)
-                return *this;
-
-            // Clear current resources
-            uses.clear();
-            if (uses.list)
-                ::operator delete(uses.list);
-
-            // Steal resources
-            uses.list = o.uses.list;
-            uses.count = o.uses.count;
-            uses.cap = o.uses.cap;
-            length = o.length;
-
-            // Reset source
-            o.uses.list = nullptr;
-            o.uses.count = 0;
-            o.uses.cap = 0;
-            o.length = 0;
-
-            return *this;
-        }
-
-        inline bool has(usz index) const { return index < length; }
-
-        Array<T> begin() const { return *this; }
-        Array<T> end() const { return Array<T>(); }
-        bool operator!=(const Array<T> &other) const { return length > 0; }
-        T &operator*() { return (*this)[0]; }
-        Array<T> &operator++()
-        {
-            shift();
-            return *this;
-        }
-
-        void alloc(usz fwd, usz back = 0)
-        {
-            if (fwd == 0 && back == 0)
-                return;
-            ArrayFragment<T> *f = ArrayFragment<T>::create(fwd, back);
-            for (usz i = 0; i < fwd; ++i)
-                new (&f->data[i]) T();
-            f->length = fwd;
-            ArrayUse<T> u;
-            u.fragment = f;
-            u.own = true;
-            uses.push(Xi::Move(u));
-            recompute();
-        }
-
-        T *data()
-        {
-            if (length == 0)
-                return nullptr;
-            if (uses.count == 1 && !uses[0].reverse)
-                return uses[0].fragment->data;
-            ArrayFragment<T> *flat = ArrayFragment<T>::create(length, 0);
-            usz w = 0;
-            for (usz i = 0; i < uses.count; ++i)
-            {
-                ArrayUse<T> &u = uses[i];
-                T *src = u.fragment->data;
-                usz cnt = u.fragment->length;
-                if (w + cnt > flat->capacity)
-                    cnt = flat->capacity - w;
-                if (!u.reverse)
-                {
-                    for (usz k = 0; k < cnt; ++k)
-                        new (&flat->data[w++]) T(src[k]);
-                }
-                else
-                {
-                    for (usz k = cnt; k > 0; --k)
-                        new (&flat->data[w++]) T(src[k - 1]);
-                }
-            }
-            flat->length = w;
-            uses.clear();
-            ArrayUse<T> u;
-            u.fragment = flat;
-            u.own = true;
-            uses.push(Xi::Move(u));
-            recompute();
-            return flat->data;
-        }
-        const T *data() const { return const_cast<Array *>(this)->data(); }
-
-        T shift()
-        {
-            if (length == 0)
-                return T();
-            ensure_unique(0);
-            ArrayUse<T> &u = uses[0];
-            ArrayFragment<T> *f = u.fragment;
-            T ret;
-            if (!u.reverse)
-            {
-                ret = Xi::Move(f->data[0]);
-                f->data[0].~T();
-                f->data++;
-                f->length--;
-            }
-            else
-            {
-                ret = Xi::Move(f->data[f->length - 1]);
-                f->data[f->length - 1].~T();
-                f->length--;
-            }
-            length--;
-            if (f->length == 0)
-                uses.remove(0);
-            else
-                for (usz i = 1; i < uses.count; ++i)
-                    uses[i].at--;
-            return ret;
-        }
-
-        T pop()
-        {
-            if (length == 0)
-                return T();
-            usz idx = uses.count - 1;
-            ensure_unique(idx);
-            ArrayUse<T> &u = uses[idx];
-            ArrayFragment<T> *f = u.fragment;
-            T ret;
-            if (!u.reverse)
-            {
-                ret = Xi::Move(f->data[f->length - 1]);
-                f->data[f->length - 1].~T();
-                f->length--;
-            }
-            else
-            {
-                ret = Xi::Move(f->data[0]);
-                f->data[0].~T();
-                f->data++;
-                f->length--;
-            }
-            length--;
-            if (f->length == 0)
-                uses.remove(idx);
-            return ret;
-        }
-
-        void grow_at_back(usz new_capacity)
-        {
-            ArrayFragment<T> *f = ArrayFragment<T>::create(new_capacity, 0);
-            ArrayUse<T> u;
-            u.fragment = f;
-            u.own = true;
-            u.at = length;
-            uses.push(Xi::Move(u));
-        }
-
-        void grow_at_front(usz new_capacity)
-        {
-            ArrayFragment<T> *f = ArrayFragment<T>::create(0, new_capacity);
-            ArrayUse<T> u;
-            u.fragment = f;
-            u.own = true;
-            uses.insert(0, Xi::Move(u));
-        }
-
-        void push(const T &val)
-        {
-            if (uses.count == 0)
-            {
-                this->grow_at_back(XI_ARRAY_MIN_CAP);
-            }
-
-            if (uses[uses.count - 1].fragment->tail_room() == 0)
-            {
-                this->grow_at_back(uses[uses.count - 1].fragment->capacity * 2);
-            }
-
-            ArrayUse<T> &u = uses[uses.count - 1];
-            ArrayFragment<T> *f = u.fragment;
-
-            new (&f->data[f->length]) T(val);
-            f->length++;
-            this->recompute();
-        }
-
-        long long find(const T &needle, usz start = 0) const
-        {
-            usz currentGlobal = 0;
-            for (usz i = 0; i < uses.count; ++i)
-            {
-                const ArrayUse<T> &u = uses[i];
-                usz len = u.fragment->length;
-                if (currentGlobal + len <= start)
-                {
-                    currentGlobal += len;
-                    continue;
-                }
-                usz k = (currentGlobal < start) ? (start - currentGlobal) : 0;
-                T *raw = u.fragment->data;
-                for (; k < len; ++k)
-                {
-                    usz pIdx = u.reverse ? (len - 1 - k) : k;
-                    if (raw[pIdx] == needle)
-                        return (long long)(currentGlobal + k);
-                }
-                currentGlobal += len;
-            }
-            return -1;
-        }
-
-        Array<T> reverse() const
-        {
-            Array<T> res;
-            res.uses.reserve(uses.count);
-            for (usz i = uses.count; i > 0; --i)
-            {
-                ArrayUse<T> u = uses[i - 1];
-                u.reverse = !u.reverse;
-                res.uses.push(Xi::Move(u));
-            }
-            res.recompute();
-            return res;
-        }
-
-        void break_at(usz index)
-        {
-            if (index == 0 || index >= length)
-                return;
-            usz off;
-            usz idx = find_use_index(index, off);
-            if (idx == (usz)-1 || off == 0)
-                return;
-            ArrayFragment<T> *old = uses[idx].fragment;
-            bool isRev = uses[idx].reverse;
-            usz oldAt = uses[idx].at;
-            usz lenA = off;
-            usz lenB = old->length - off;
-            ArrayFragment<T> *fA = ArrayFragment<T>::create(lenA, 0);
-            ArrayFragment<T> *fB = ArrayFragment<T>::create(lenB, 0);
-            T *src = old->data;
-            if (!isRev)
-            {
-                for (usz i = 0; i < lenA; ++i)
-                    new (&fA->data[i]) T(src[i]);
-                for (usz i = 0; i < lenB; ++i)
-                    new (&fB->data[i]) T(src[lenA + i]);
-            }
-            else
-            {
-                for (usz i = 0; i < lenA; ++i)
-                    new (&fA->data[i]) T(src[old->length - 1 - i]);
-                for (usz i = 0; i < lenB; ++i)
-                    new (&fB->data[i]) T(src[lenB - 1 - i]);
-            }
-            fA->length = lenA;
-            fB->length = lenB;
-            uses[idx].fragment->release();
-            uses[idx].fragment = fA;
-            uses[idx].reverse = false;
-            uses[idx].at = oldAt;
-            ArrayUse<T> uB;
-            uB.fragment = fB;
-            uB.own = true;
-            uses.insert(idx + 1, Xi::Move(uB));
-            recompute();
-        }
-
-        Array<T> begin(usz from, usz to)
-        {
-            usz end = (to == 0) ? length : to;
-            if (from >= end)
-                return Array<T>();
-            break_at(from);
-            break_at(end);
-            Array<T> sub;
-            usz g = 0;
-            for (usz i = 0; i < uses.count; ++i)
-            {
-                usz len = uses[i].fragment->length;
-                if (g >= from && (g + len) <= end)
-                    sub.uses.push(uses[i]);
-                g += len;
-            }
-            sub.recompute();
-            return sub;
-        }
-
-        Array<T> splice(usz from, usz to = 0)
-        {
-            Array<T> sub = begin(from, to);
-            usz end = (to == 0) ? length : to;
-            for (usz i = uses.count; i > 0; --i)
-            {
-                usz idx = i - 1;
-                usz s = uses[idx].at;
-                usz l = uses[idx].fragment->length;
-                if (s >= from && (s + l) <= end)
-                    uses.remove(idx);
-            }
-            recompute();
-            return sub;
-        }
-
-        void concat(const Array<T> &other)
-        {
-            for (usz i = 0; i < other.uses.count; ++i)
-                uses.push(other.uses[i]);
-            recompute();
-        }
-
-        T &operator[](usz i)
-        {
-            usz off;
-            usz idx = find_use_index(i, off);
-            if (idx == (usz)-1)
-            {
-                static T dummy;
-                return dummy;
-            }
-            ensure_unique(idx);
-            ArrayUse<T> &u = uses[idx];
-            if (u.reverse)
-                return u.fragment->data[u.fragment->length - 1 - off];
-            return u.fragment->data[off];
-        }
-
-        const T &operator[](usz i) const
-        {
-            usz off;
-            usz idx = find_use_index(i, off);
-            if (idx == (usz)-1)
-            {
-                static T dummy;
-                return dummy;
-            }
-            const ArrayUse<T> &u = uses[idx];
-            if (u.reverse)
-                return u.fragment->data[u.fragment->length - 1 - off];
-            return u.fragment->data[off];
-        }
-
-        void pushEach(const T *ptr, usz cnt)
-        {
-            if (!ptr || cnt == 0)
-                return;
-            ArrayFragment<T> *f = ArrayFragment<T>::create(cnt, 0);
-            for (usz i = 0; i < cnt; ++i)
-                new (&f->data[i]) T(ptr[i]);
-            f->length = cnt;
-
-            ArrayUse<T> u;
-            u.fragment = f;
-            u.own = true;
-            uses.push(Xi::Move(u));
-            length += cnt;
-            recompute();
-        }
-
-        void set(const Array<T> &o, usz idx = 0)
-        {
-            for (usz i = 0; i < o.length; ++i)
-            {
-                if (idx + i < length)
-                    (*this)[idx + i] = o[i];
-                else
-                    push(o[i]);
-            }
-        }
-
-        void unshift(const T &val)
-        {
-            if (uses.count == 0)
-                this->grow_at_front(XI_ARRAY_MIN_CAP);
-
-            if (uses[0].fragment->head_room() == 0)
-            {
-                this->grow_at_front(uses[0].fragment->capacity * 2);
-            }
-
-            ArrayUse<T> &u = uses[0];
-            ArrayFragment<T> *f = u.fragment;
-
-            if (f->data > f->allocation)
-            {
-                f->data--;
-                new (f->data) T(val);
-                f->length++;
-            }
-            this->recompute();
-        }
-
-        void set(const T *src_ptr, usz input_cnt, usz start_idx = 0)
-        {
-            for (usz i = 0; i < input_cnt; ++i)
-            {
-                if (start_idx + i < this->length)
-                    (*this)[start_idx + i] = src_ptr[i];
-                else
-                    this->push(src_ptr[i]);
-            }
-        }
-
-        void remove(usz index)
-        {
-            if (index >= length)
-                return;
-            splice(index, index + 1);
-        }
-
-        void clear()
-        {
-            uses.clear();
-            length = 0;
-        }
-
-        static void check_abi()
-        {
-            printf("[Xi::Array ABI] sizeof(ArrayUse<u8>): %zu\n", sizeof(ArrayUse<T>));
-            printf("[Xi::Array ABI] sizeof(Array<u8>): %zu\n", sizeof(Array<T>));
-            printf("[Xi::Array ABI] offsetof(uses): %zu\n", (usz) & ((Array<T> *)0)->uses);
-        }
-    };
-}
+} // namespace Xi
 
 #endif // XI_ARRAY_HPP

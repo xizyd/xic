@@ -4,6 +4,7 @@ project(Xi VERSION 1.0.0 LANGUAGES C CXX)
 add_library(Xi 
     ${CMAKE_CURRENT_SOURCE_DIR}/packages/monocypher/monocypher.c
 )
+
 target_include_directories(Xi PUBLIC 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>

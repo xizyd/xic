@@ -1,11 +1,25 @@
 import cppyy.ll
 import ctypes
+import os
 from pathlib import Path
 
 cppyy.add_include_path(str(Path(__file__).resolve().parent) + "/include")
 
-cppyy.include("../packages/monocypher/monocypher.c")
+# # Load Monocypher from shared library
+# lib_path = str(Path(__file__).resolve().parent) + "/dist/libmonocypher.so"
+# if not os.path.exists(lib_path):
+#     # Try local build if packaged differently
+#     lib_path = str(Path(__file__).resolve().parent) + "/../dist/libmonocypher.so"
+
+# cppyy.load_library(lib_path)
+
+cppyy.c_include("../packages/monocypher/monocypher.c") # Removed
+
+#cppyy.c_include("../packages/monocypher/monocypher.h") # Use header for declarations
+
 cppyy.include("Xi/String.hpp")
+cppyy.include("Xi/InlineArray.hpp")
+cppyy.include("Xi/Array.hpp")
 cppyy.include("Rho/Tunnel.hpp")
 cppyy.include("Rho/Railway.hpp")
 
@@ -30,7 +44,7 @@ def String_init(self, arg=None):
         b_data = arg
     elif isinstance(arg, str):
         b_data = arg.encode('utf-8')
-    elif hasattr(arg, 'length'):
+    elif hasattr(arg, 'size'):
         self.concat(arg)
         return
 
@@ -44,7 +58,7 @@ def String_init(self, arg=None):
 
 def String_bytes(self):
     """FORCED binary export. Always returns the Python 'bytes' type."""
-    sz = self.length
+    sz = self.size()
     if sz == 0: return b""
     # Direct memory copy from C++ data() pointer to Python bytes object
     addr = cppyy.ll.cast['uintptr_t'](self.data())
@@ -55,25 +69,26 @@ def String_repr(self):
     try:
         # bytes(self) calls String_bytes, then we decode it
         deci = bytes(self.toDeci()).decode('utf-8')
-        return f"Xi::String({self.length})[{deci}]"
+        return f"Xi::String({self.size()})[{deci}]"
     except:
-        return f"Xi::String({self.length})[binary]"
+        return f"Xi::String({self.size()})[binary]"
 
-# APPLY PATCHES
+# String patches
 String.__init__  = String_init
 String.__bytes__ = String_bytes
 String.__str__   = lambda self: bytes(self).decode('utf-8', 'replace')
 String.__repr__  = String_repr
 
-# Map patches
-Xi.Map.__getitem__ = lambda self, k: self.get(k)
-Xi.Map.__setitem__ = lambda self, k, v: self.put(k, v)
+# Apply patches to Array template proxy
+# Note: These are for Python-side convenience. 
+# However, we must be careful not to break TemplateProxy.__getitem__.
+# Xi.Array.__getitem__ = Array_getitem # Let's avoid these for now if not needed
 
 # ------------------------------------------------------------------
 # EXPORTS
 # ------------------------------------------------------------------
-Railway = Xi.Railway
+RailwayStation = Xi.RailwayStation
 Tunnel = Xi.Tunnel
 Map = Xi.Map
-RailwayPacket = Xi.Railway.RailwayPacket
 Packet = Xi.Packet
+RawCart = Xi.RawCart

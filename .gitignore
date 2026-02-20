@@ -1,2 +1,12 @@
+# NodeJS development things
+node_modules/
+
+# Python development things
+.venv/
+__pycache__/
+
+
+dist/
+
+# Temporary files for development
 dev/
-__pycache__
