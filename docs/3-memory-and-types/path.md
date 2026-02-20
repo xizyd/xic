@@ -1,4 +1,4 @@
-# Path (URL \u0026 URI)
+# Path (URL & URI)
 
 `Xi::Path` is a robust, allocation-lightweight URL and URI parser.
 
@@ -24,7 +24,7 @@ It is designed to intelligently fuse path segments together. For example, if a c
 
 ## 📖 Complete API Reference
 
-### 1. Construction \u0026 Resolution
+### 1. Construction & Resolution
 
 The constructor dynamically detects whether you are passing a full absolute URI (`https://...`) or merely a relative local route (`/css/style.css`).
 
@@ -46,7 +46,7 @@ These methods return the extracted components directly as `Xi::String` objects n
 - `String port()`: e.g., `"8080"` (Defaults to empty if absent)
 - `String host()`: Fuses `hostname:` and `port` automatically.
 
-### 3. Path Segments \u0026 Queries
+### 3. Path Segments & Queries
 
 - `String basename()`
   Returns the very last segment in the path array (e.g., `index.html`).
@@ -57,7 +57,7 @@ These methods return the extracted components directly as `Xi::String` objects n
 - `String getQuery(const String &key)`
   Direct accessor. Returns the decoded value associated with the `key` (e.g., `?search=hello` -> `path.getQuery("search")` returns `"hello"`), or an empty String if absent.
 
-### 4. Serialization \u0026 Formatting
+### 4. Serialization & Formatting
 
 If you organically built a local `Xi::Path` in memory by editing its internal map or pushing string segments, you can forcefully export it out to a raw string representation for the HTTP Socket.
 
