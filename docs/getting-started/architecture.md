@@ -30,7 +30,7 @@ In `Xi`, you are always aware of how memory is changing:
 - Expanding buffers is done explicitly (e.g., `alloc()`), guaranteeing you know exactly when an expensive heap operation is happening.
 - Many operations leverage `View` proxies (like `InlineArray` slices) that point to existing memory rather than cloning data.
 
-## 4. Cross-Platform \u0026 STL Interoperability
+## 4. Cross-Platform & STL Interoperability
 
 While aggressively optimized for microcontrollers, the `Xi` framework is completely universal. It compiles and runs flawlessly on **Linux, macOS, and Windows** desktops or servers with zero headaches.
 

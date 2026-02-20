@@ -9,7 +9,7 @@ Unlike standard vectors that deep-copy their contents when passed by value, `Xi:
 1. **Pass-by-Value is Free:** Passing an `InlineArray` into a function increments a strong reference count (`useCount`) instead of duplicating memory.
 2. **Slicing is Free:** You can create "Views" (sub-arrays) that point to the exact same shared memory block, simply adjusting their internal logical `offset` and logical `length`.
 3. **Copy On Write (CoW):** If you attempt to mutate (`push()`, `operator[]`) an `InlineArray` that shares its `Block` with another instance, it will transparently detach, allocate its own contiguous block, copy the data, and then apply the mutation. This guarantees perfect safety with immense performance benefits for read-heavy operations.
-4. **1:1 C-API \u0026 STL Compatibility:** Because internal memory is strictly contiguous, invoking `.data()` returns a standard `T*` pointer. This means `InlineArray` seamlessly interoperates with all legacy C-Libraries (like `memcpy`), POSIX system calls, and Linux headers directly with zero headaches.
+4. **1:1 C-API & STL Compatibility:** Because internal memory is strictly contiguous, invoking `.data()` returns a standard `T*` pointer. This means `InlineArray` seamlessly interoperates with all legacy C-Libraries (like `memcpy`), POSIX system calls, and Linux headers directly with zero headaches.
 
 ---
 

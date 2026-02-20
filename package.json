@@ -1,17 +1,31 @@
 {
   "name": "xic",
   "version": "1.0.0",
-  "description": "",
+  "description": "Xi C++ Core Primitives: Arrays, maps, inline crypto, embedded mesh networking, and the Rho Protocol for high-performance applications.",
   "main": "index.js",
   "type": "module",
+  "keywords": [
+    "cpp",
+    "esp32",
+    "mesh",
+    "rho",
+    "crypto",
+    "monocypher",
+    "IoT",
+    "UDP",
+    "P2P"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xizyd/xic.git"
+  },
+  "author": "Xi (Abderrahmene MERZOUG)",
+  "license": "ISC",
+  "packageManager": "pnpm@10.16.1",
   "scripts": {
     "dev-r": "vite",
     "build-r": "vite build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.16.1",
   "devDependencies": {
     "@fontsource/montserrat": "^5.2.8",
     "@phosphor-icons/vue": "^2.2.1",

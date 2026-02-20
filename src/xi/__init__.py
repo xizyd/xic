@@ -3,19 +3,20 @@ import ctypes
 import os
 from pathlib import Path
 
-cppyy.add_include_path(str(Path(__file__).resolve().parent) + "/include")
+# Determine current file path
+current_dir = Path(__file__).resolve().parent
 
-# # Load Monocypher from shared library
-# lib_path = str(Path(__file__).resolve().parent) + "/dist/libmonocypher.so"
-# if not os.path.exists(lib_path):
-#     # Try local build if packaged differently
-#     lib_path = str(Path(__file__).resolve().parent) + "/../dist/libmonocypher.so"
+# If installed via pip wheel, headers are packaged directly beside __init__.py inside "xi/"
+if (current_dir / "include").exists():
+    include_path = current_dir / "include"
+    pkg_path = current_dir / "packages"
+else:
+    # If running locally from the git repository, step up to the root folder
+    include_path = current_dir.parent.parent / "include"
+    pkg_path = current_dir.parent.parent / "packages"
 
-# cppyy.load_library(lib_path)
-
-cppyy.c_include("../packages/monocypher/monocypher.c") # Removed
-
-#cppyy.c_include("../packages/monocypher/monocypher.h") # Use header for declarations
+cppyy.add_include_path(str(include_path))
+cppyy.c_include(str(pkg_path / "monocypher" / "monocypher.c"))
 
 cppyy.include("Xi/String.hpp")
 cppyy.include("Xi/InlineArray.hpp")

@@ -9,13 +9,13 @@ When you define a callback using `std::function` on an ESP32 and capture complex
 `Xi::Func` circumvents this through aggressive **Small Buffer Optimization (SBO)** combined with custom Type Erasure.
 
 1. **The Inline Buffer:** Every `Xi::Func` instance contains a static 32-byte internal memory buffer (`SBO_Size = 32`).
-2. **Auto Dynamics \u0026 Type Erasure:** When you assign a generic `Callable` lambda (`auto` closure) or a function pointer to the `Func`, the assignment relies on a generic constructor template (`template <typename Callable> Func(Callable f)`).
+2. **Auto Dynamics & Type Erasure:** When you assign a generic `Callable` lambda (`auto` closure) or a function pointer to the `Func`, the assignment relies on a generic constructor template (`template <typename Callable> Func(Callable f)`).
 3. **Zero-Malloc Callbacks:** If the captured lambda state fits within those 32 bytes (which covers 99% of `[this]`, `[&]`, or primitive captures), it perfectly constructs the object _inside_ the local buffer using Placement New. `malloc` is never called.
 4. **VTable Dispatch:** It abstracts the execution behind three inline function pointers (`invoke`, `destroy`, `clone`), providing identical polymorphism to `std::function` without the RTTI bloat.
 
 ## 📖 Complete API Reference
 
-### 1. Construction \u0026 Auto Dynamics
+### 1. Construction & Auto Dynamics
 
 - `Func()`
   Constructs an empty function object. Calling `isValid()` returns `false`.
@@ -24,7 +24,7 @@ When you define a callback using `std::function` on an ESP32 and capture complex
 - `template <typename Callable> Func(Callable f)`
   The core **Auto Dynamic** constructor. It accepts literally anything that respects the `operator()` signature. If `sizeof(Callable) <= 32`, it constructs inline. If it massively exceeds the buffer, it gracefully performs an isolated heap allocation.
 
-### 2. State Transfer \u0026 Rule of 5
+### 2. State Transfer & Rule of 5
 
 - `Func(Func &&o)`
   **Move Semantics:** Transfers ownership of the captured state instantly. If the state was inside the 32-byte buffer, it byte-copies it over. If it was on the heap, it transfers the underlying pointer safely, leaving the origin empty.

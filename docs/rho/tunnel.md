@@ -1,8 +1,8 @@
 # Tunnel
 
-`Xi::Tunnel` is a peer-to-peer session controller. It manages the exact lifecycle of a connection between two isolated computers.
+`Xi::Tunnel` is a peer-to-peer session controller. It acts as the upper layer above `Xi::RailwayStation`, managing the exact lifecycle of a connection between two isolated computers.
 
-Its primary job is taking raw, unstructured `Xi::String` bytes pulled perfectly off a network socket (like UDP) and parsing them through a highly resilient state machine that guarantees security, order, and integrity.
+While `RailwayStation` ensures that raw bytes map to the correct entity on a graph, `Tunnel` parses those bytes into a highly resilient state machine guaranteeing logical application-layer security, byte-order, and fragmentation integrity.
 
 ---
 
@@ -11,12 +11,12 @@ Its primary job is taking raw, unstructured `Xi::String` bytes pulled perfectly 
 Why is `Tunnel` faster than traditional websockets or `TCP` streams?
 
 1. **Zero-Allocation Deserialization:**
-   When a 1,400-byte UDP packet arrives, `Tunnel::parse()` does not construct a massive `std::vector` or heavy Object tree to represent it. It uses `Xi::String::peekVarLong()` explicitly on the underlying memory buffer to read the packet headers `[Type][ID][Channel]`.
+   When a 1,400-byte UDP packet arrives, `Tunnel::parse()` does not construct a massive `std::vector` or heavy Object tree to represent it. It uses native substring parsing directly on the underlying `Xi::String` memory.
 2. **True Unreliable Fast-Path (Bypassing HOL):**
    If you send a player movement packet via TCP and it drops, the entire game engine connection stalls (Head-of-Line Blocking). By default, `Tunnel` marks data as `important = true` (Reliable). However, game engines can flip a packet flag to `important = false` or `bypassHOL = true`.
-   If a `bypassHOL` packet arrives slightly out of order, `Tunnel` immediately dispatches it to the application logic rather than holding it in a buffer waiting for the missing sequence to arrive, achieving absolute minimal latency jitter for High-Tickrate scenarios like First-Person Shooters.
-3. **Static Mutexing/Threading:**
-   There are no background polling threads. A `Tunnel` object only computes memory exactly when you tell it to via `tunnel.update()` or `tunnel.parse(bytes)`. This makes it 100% deterministic inside tightly constrained environments like an ESP32 `loop()` or a Unity/Unreal Engine `Update()` frame.
+   If a `bypassHOL` packet arrives, `Tunnel` immediately dispatches it to the application logic rather than holding it in a buffer waiting for the missing sequence to arrive, achieving absolute minimal latency jitter for High-Tickrate scenarios like First-Person Shooters.
+3. **Selective Repeat ARQ:**
+   Instead of archaic "Go-Back-N" algorithms, `Tunnel` uses an advanced Sliding Window bitmap (`receiveWindowMask`). When sending connection health heartbeats, it explicitly lists which packet IDs it _does_ have, and which micro-fragments are _missing_, allowing the peer to selectively re-transmit purely what plummeted over a bad LoRa connection.
 
 ---
 
@@ -26,46 +26,54 @@ A newly created `Xi::Tunnel` is simply a blank slate. It must organically discov
 
 ### 1. Probing & Announcing (Discovery)
 
-To connect two systems without hardcoding their IP addresses, `Tunnel` uses an unencrypted discovery mechanism.
+To connect two systems without hardcoding their IP addresses, `Tunnel` uses an unencrypted discovery mechanism via specific Channel 0 packet flags (Type 10/11).
 
-- `tunnel.probe(metadata)`: Used by a **Client**. It broadcasts a generic ping into the ether (usually over a Multi-Cast or Broadcast UDP address) asking "Is anyone listening?". The `metadata` can contain the client's hostname or desired game lobby.
+- `tunnel.probe(metadata)`: Used by a **Client**. It broadcasts a generic ping into the ether (usually over `Railway` Multicast rail) asking "Is anyone listening?". The `metadata` can contain the client's hostname or desired game lobby.
 - `tunnel.onProbe()` / `tunnel.announce(server_metadata)`: Used by a **Server**. When the server hears a Probe, it fires `.announce()` back directly to the Client.
-- **The Handshake:** Once the Client receives the Announce, it "locks on" to the Server's address and they proceed to encrypt the connection.
+- **The Handshake:** Once the Client receives the Announce via `.onAnnounce()`, it "locks on" to the Server's address and they proceed to encrypt the connection.
 
-### 2. The Exchange (Security)
+### 2. Application Data & Fragmentation
 
-TLS 1.3 takes ~10,000 lines of OpenSSL C-code and multiple round trips to establish a secure connection. `Tunnel` achieves the exact same Forward-Secrecy using a pristine **X25519 Elliptic-Curve Diffie-Hellman (ECDH)** single-round-trip architecture.
-
-When either side wants to go private, it generates a Switch Request.
-
-- `tunnel.generateSwitchRequest(peerPublicKey)`
-  It creates a mathematically irreversible 32-byte public key string and bundles it. The peer receives it via `.onSwitchRequest()`.
-  Once both sides have exchanged `SwitchRequests`, they call:
-- `tunnel.enableSecurityX()`
-  This triggers the `Crypto` module to multiply their Private Key against the peer's Public Key, resulting in an identical shared symmetric 32-byte hash simultaneously on both computers over a public airwave. The `isSecure` boolean flips to `true`.
-
-### 3. Application Data & Fragmentation
-
-Once running, developers push standard logical payloads into the Tunnel.
+Once running, developers natively push and receive conceptual app-level packets.
+The developer _never thinks about the maximum byte limits of the radio network_.
 
 - `tunnel.push(payload, channel_id)`
-  If the user attempts to `push` a massive 5-Megabyte map update or JPEG image across the `Tunnel`, attempting to send it over UDP in one chunk will instantly crash the OS-level socket MTU limits (Maximum Transmission Unit).
+  If the user attempts to `push` a massive 5-Megabyte map update or JPEG image across the `Tunnel`, attempting to send it over UDP in one chunk will instantly exceed the OS-level socket MTU limits (Maximum Transmission Unit).
 
-Instead of failing, the `Tunnel` transparently slices the 5MB payload into tiny, independent 1400-byte `Fragment` packets, numbering them sequentially, and streaming them across the network.
-
-- _Note: When the `.build()` command fires to pull the packet bytes out of the Tunnel for the network socket, it handles the framing automatically._
-
-When the remote peer receives the fragments piece by piece, it holds them in an internalized `Map` buffer. Only when the final fractional piece arrives does the `Tunnel` perfectly reconstruct the final 5MB `Xi::String` payload and fire the standard `.onPacket()` callback to the application as a unified whole.
+When the `tunnel.flush()` command physically pulls the internal Outbox into wire-ready packets, it transparently limits sizes based on the provided parameter `tunnel.flush(32 /* BlockSize */, 1400 /* MTU */)`.
+The `Tunnel` meticulously fragments the mega-string into `[Start]`, `[Middle]`, and `[End]` chunks natively. When the remote peer receives the fragments piece by piece, it holds them in an internalized Reassembly Buffer. Once complete, it fires `.onPacket()` as a unified whole.
 
 ---
 
-## 📖 Lifecycle Callbacks
+## 📖 Lifecycle Integration
 
-The C++ Developer interfaces with the `Tunnel` entirely asynchronously using lambda closures (powered by the zero-allocation `Xi::Func`).
+The C++ Developer interfaces with the `Tunnel` inside deterministic `update()` game loops, pulling cleanly constructed bytes out for transmission.
+
+```cpp
+Xi::Tunnel session;
+
+// Frame Loop (60 FPS)
+void loop() {
+  // 1. Process Timeouts
+  session.update();
+
+  // 2. Generate exactly what bytes we need to push to the UDP Socket
+  // This automatically extracts outbox payloads, handles ARQ Resends,
+  // builds X25519 Handshake requests, and ensures payloads fit within 1400 bytes.
+  while (true) {
+     Xi::String outputChunk = session.flush(32, 1400);
+     if (outputChunk.length() == 0) break;
+
+     myHardwareSocket.send(outputChunk);
+  }
+}
+```
+
+### Callbacks
 
 - `tunnel.onPacket([](Xi::Packet p) { ... })`
   Fired when a fully reconstructed application-level payload successfully arrives.
-- `tunnel.onDisconnect([](Xi::Map reason) { ... })`
-  Fired manually, or automatically if `tunnel.update()` realizes the `.lastSeen` heartbeat counter has exceeded the timeout threshold.
+- `tunnel.onDisconnect([](Xi::Map<u64, String> reason) { ... })`
+  Fired manually, or automatically if `tunnel.update()` realizes the `.lastSeen` heartbeat counter has exceeded the `disconnectTimeout` threshold (e.g. `120000ms`).
 - `tunnel.onDestroy([]() { ... })`
-  A hard-cleanup callback used to instantly destroy routing logic if the peer is permanently lost or kicked.
+  A hard-cleanup callback used to instantly destroy routing logic if the peer is permanently lost or kicked, signaling the `RailwayStation` to unhook from the `Hub`.

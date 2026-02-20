@@ -2,7 +2,7 @@
 
 `Xi::String` is the primary byte-buffer and text manipulation structure. As a direct inheritor of `Xi::InlineArray<u8>`, it boasts identical **Copy-on-Write (CoW)** optimization and explicit memory management, providing an embedded-safe alternative to both `std::string` and Arduino's notoriously fragmented `String` class.
 
-## Architectural Overview: CoW \u0026 Network Buffers
+## Architectural Overview: CoW & Network Buffers
 
 The standard Arduino `String` class crashes devices because every operation (`myString += "a"`) allocates a brand new heap buffer, copies the contents, and shreds the SRAM.
 `std::string` avoids this for tiny strings via Small String Optimization (SSO), but suffers the same exponential doubling fragmentation for larger binary payloads.
@@ -20,7 +20,7 @@ Because `Xi::String` inherits from `InlineArray<u8>`:
 
 ## 📖 Complete API Reference
 
-### 1. Structure \u0026 Size
+### 1. Structure & Size
 
 - `usz length()` / `usz size()`
   Returns the physical number of bytes actively occupied (excluding hidden capacity or null terminators).
@@ -29,7 +29,7 @@ Because `Xi::String` inherits from `InlineArray<u8>`:
 - `void fill(u8 val)`
   Memsets the entire string buffer to a specific byte value.
 
-### 2. Concatenation \u0026 Appending
+### 2. Concatenation & Appending
 
 These operations modify the string. If the string is shared (CoW), it automatically detaches and reallocates a unique memory block securely before applying the changes.
 
@@ -42,14 +42,14 @@ These operations modify the string. If the string is shared (CoW), it automatica
 - `void append_f32(f64 n, int precision = 6)`
   Appends a floating-point integer with determined precision.
 
-### 3. C-String Interop \u0026 Mutability
+### 3. C-String Interop & Mutability
 
 - `char* c_str()`
   Retrieves a legacy null-terminated `char*`. Unlike `std::string`, if the `Xi::String` does not currently end with `\0`, this method **mutates the underlying buffer**, safely appending a null byte without increasing the logical `size()` representation, then returns the pointer.
 - `void recompute()`
   If you pass `c_str()` or `data()` to an external C-library (like reading a UDP socket directly into the string buffer), call `.recompute()` to force the string to recount its logical length using `strlen()`.
 
-### 4. Advanced Searching \u0026 Parsing
+### 4. Advanced Searching & Parsing
 
 - `long long indexOf(const char *needle, usz start = 0)`
   Returns the exact index of the substring, or `-1` if absent.
@@ -60,7 +60,7 @@ These operations modify the string. If the string is shared (CoW), it automatica
 - `String replace(const char *find, const char *rep)`
   Returns a new string where all occurrences of the target are replaced.
 
-### 5. Formatting \u0026 Static Utilities
+### 5. Formatting & Static Utilities
 
 - `String toHex()` / `String toDeci()`
   Dumps the string bytes into legible Hexadecimal or Decimal representation strings. Perfect for dumping AES ciphertext or UDP packet nonces.
@@ -69,7 +69,7 @@ These operations modify the string. If the string is shared (CoW), it automatica
 - `static void secureRandomFill(u8 *buffer, usz size)`
   Interfaces directly with the `Crypto` module's True Random Generator.
 
-### 6. Binary Streams \u0026 Buffers
+### 6. Binary Streams & Buffers
 
 The `Xi::String` class is heavily optimized for constructing binary networking packets payload by payload:
 
