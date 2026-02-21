@@ -401,11 +401,25 @@ public:
 
   void serialize(Xi::String &s) const {
     s.pushVarLong((long long)count);
+
+    // Gather keys and sort them to guarantee deterministic serialization order
+    InlineArray<K> keys;
     for (auto &kv : *this) {
-      // Note: This assumes K and V can be serialized.
-      // Currently tailored for the known use cases (u64 keys, String values).
-      s.pushVarLong((long long)kv.key);
-      s.pushVarString(kv.value);
+      keys.push(kv.key);
+    }
+    for (usz i = 0; i < keys.size(); ++i) {
+      for (usz j = i + 1; j < keys.size(); ++j) {
+        if (keys[j] < keys[i]) {
+          K tmp = keys[i];
+          keys[i] = keys[j];
+          keys[j] = tmp;
+        }
+      }
+    }
+
+    for (usz i = 0; i < keys.size(); ++i) {
+      s.pushVarLong((long long)keys[i]);
+      s.pushVarString(*get(keys[i]));
     }
   }
 

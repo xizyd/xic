@@ -569,14 +569,10 @@ public:
         return (*arr)[i * strides[0] + arr->offset];
       }
     }
-
-    template <typename... Args>
-    auto view(Args... args) -> decltype(arr->view(args...)) {
-      return arr->view(args...);
-    }
   };
 
-  template <typename... Args> auto view(Args... args) -> ViewContainer<sizeof...(Args)> {
+  template <typename... Args>
+  auto view(Args... args) -> ViewContainer<sizeof...(Args)> {
     constexpr int Rank = sizeof...(Args);
     ViewContainer<Rank> v;
     v.arr = this;

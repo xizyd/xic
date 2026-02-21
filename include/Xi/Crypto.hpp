@@ -164,6 +164,55 @@ inline Xi::String sharedKey(const Xi::String &privateKey,
 }
 
 /**
+ * Proofed Protocol Make
+ * Returns a serialized array of [PublicKey 32Bytes] [Blake2b(ECDH) 8Bytes]
+ */
+inline Xi::String makeProofed(const Array<KeyPair> &myKeys,
+                              const Xi::String &theirPublicKey) {
+  Xi::String res;
+  res.pushVarLong((long long)myKeys.size());
+  for (usz i = 0; i < myKeys.size(); i++) {
+    res += myKeys[i].publicKey;
+    Xi::String shared = sharedKey(myKeys[i].secretKey, theirPublicKey);
+    Xi::String h = hash(shared, 8);
+    res += h;
+  }
+  return res;
+}
+
+/**
+ * Proofed Protocol Parse
+ * Given a proof string and our secret key, return an array of public keys that
+ * matched the expected ECDH derived hashes.
+ */
+inline Array<Xi::String> parseProofed(const Xi::String &proofed,
+                                      const Xi::String &mySecretKey) {
+  Array<Xi::String> res;
+  usz at = 0;
+  auto countRes = proofed.peekVarLong(at);
+  if (countRes.error)
+    return res;
+  at += countRes.bytes;
+
+  for (long long i = 0; i < countRes.value; ++i) {
+    if (at + 40 > proofed.size())
+      break;
+
+    Xi::String pub = proofed.begin(at, at + 32);
+    Xi::String providedHash = proofed.begin(at + 32, at + 40);
+    at += 40;
+
+    Xi::String shared = sharedKey(mySecretKey, pub);
+    Xi::String expectedHash = hash(shared, 8);
+
+    if (providedHash.constantTimeEquals(expectedHash, 8)) {
+      res.push(pub);
+    }
+  }
+  return res;
+}
+
+/**
  * AEAD Encrypt (ChaCha20-Poly1305)
  * Matching: Xi::aeadSeal(key, nonce, aad, plaintext) -> Returns
  * [Ciphertext][Tag]
@@ -260,6 +309,161 @@ inline void secureRandomFill(u8 *buffer, usz size) {
   crypto_chacha20_ietf(buffer, buffer, size, key, nonce, _secureCounter);
   u32 blocks = (u32)((size + 63) / 64);
   _secureCounter += blocks;
+}
+
+// -------------------------------------------------------------------------
+// XEdDSA Sign & Verify (Using BLAKE2b)
+// -------------------------------------------------------------------------
+
+// Ed25519 Curve order (L), little endian.
+static const u8 L_BYTES[32] = {
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7,
+    0xa2, 0xde, 0xf9, 0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+};
+
+// Helper: negate scalar a mod L => a' = L - a
+inline void negate_scalar_mod_L(u8 a_out[32], const u8 a[32]) {
+  u32 carry = 0;
+  for (int i = 0; i < 32; i++) {
+    i32 temp = (i32)L_BYTES[i] - a[i] - carry;
+    if (temp < 0) {
+      temp += 256;
+      carry = 1;
+    } else {
+      carry = 0;
+    }
+    a_out[i] = temp & 0xFF;
+  }
+}
+
+/**
+ * XEdDSA Sign
+ * Converts an X25519 private key to an Ed25519 private key context
+ * and signs data using BLAKE2b.
+ * Returns a 64-byte signature [R || s].
+ */
+inline Xi::String signX(const Xi::String &privateKey, const Xi::String &text) {
+  if (privateKey.size() != 32)
+    return Xi::String();
+
+  u8 a[32]; // private scalar
+  u8 A[32]; // corresponding Ed25519 public key
+  u8 a_prime[32];
+
+  // 1. Get Ed25519 public key from X25519 private key
+  u8 pub_x[32];
+  crypto_x25519_public_key(pub_x, privateKey.data());
+  crypto_x25519_to_eddsa(A, pub_x);
+
+  // 2. Clamp scalar `a`
+  crypto_eddsa_trim_scalar(a, privateKey.data());
+
+  // 3. Reduce `a` modulo L
+  u8 a_padded[64] = {0};
+  for (int i = 0; i < 32; ++i)
+    a_padded[i] = a[i];
+  u8 a_mod_L[32];
+  crypto_eddsa_reduce(a_mod_L, a_padded);
+
+  // 4. To match XEdDSA definition we need to see if A has negative sign bit.
+  u8 A_check[32];
+  crypto_eddsa_scalarbase(A_check,
+                          a_mod_L); // Use reduced scalar for correctness
+  // Monocypher's public keys have their sign bit in the most significant bit.
+  if (A_check[31] & 0x80) {
+    negate_scalar_mod_L(a_prime, a_mod_L);
+  } else {
+    for (int i = 0; i < 32; ++i)
+      a_prime[i] = a_mod_L[i];
+  }
+
+  // 4. Generate deterministic random nonce r
+  // r = BLAKE2b(secret_prefix || text) mod L
+  u8 secret[64];
+  crypto_blake2b(secret, 64, privateKey.data(), 32);
+  u8 *prefix = secret + 32; // The second 32 bytes
+
+  crypto_blake2b_ctx ctx;
+  crypto_blake2b_init(&ctx, 64);
+  crypto_blake2b_update(&ctx, prefix, 32);
+  crypto_blake2b_update(&ctx, text.data(), text.size());
+  u8 hash_out[64];
+  crypto_blake2b_final(&ctx, hash_out);
+
+  u8 r[32];
+  crypto_eddsa_reduce(r, hash_out); // r = hash mod L
+
+  // 5. R = rB
+  u8 R[32];
+  crypto_eddsa_scalarbase(R, r);
+
+  // 6. h = BLAKE2b(R || A || text) mod L
+  A[31] &= 0x7F; // XEdDSA requires hashing the unsigned generated A
+
+  crypto_blake2b_init(&ctx, 64);
+  crypto_blake2b_update(&ctx, R, 32);
+  crypto_blake2b_update(&ctx, A, 32);
+  crypto_blake2b_update(&ctx, text.data(), text.size());
+  crypto_blake2b_final(&ctx, hash_out);
+
+  u8 h[32];
+  crypto_eddsa_reduce(h, hash_out); // h = hash mod L
+
+  // 7. S = (r + h * a_prime) mod L
+  u8 S[32];
+  crypto_eddsa_mul_add(S, h, a_prime, r);
+
+  Xi::String signature = zeros(64);
+  for (int i = 0; i < 32; i++) {
+    signature.data()[i] = R[i];
+    signature.data()[i + 32] = S[i];
+  }
+
+  crypto_wipe(a, 32);
+  crypto_wipe(a_prime, 32);
+  crypto_wipe(r, 32);
+  crypto_wipe(secret, 64);
+
+  return signature;
+}
+
+/**
+ * XEdDSA Verify
+ * Converts an X25519 public key to an Ed25519 public key and
+ * verifies the [R || s] signature using standard BLAKE2b verification.
+ */
+inline bool verifyX(const Xi::String &publicKey, const Xi::String &text,
+                    const Xi::String &signature) {
+  if (publicKey.size() != 32 || signature.size() != 64)
+    return false;
+
+  // 1. Convert X25519 public key to Ed25519 public key A
+  u8 A[32];
+  crypto_x25519_to_eddsa(A, publicKey.data());
+
+  // XEdDSA requires both hashing and checking against the unsigned A
+  A[31] &= 0x7F;
+
+  // 2. h = BLAKE2b(R || A || text) mod L
+  crypto_blake2b_ctx ctx;
+  crypto_blake2b_init(&ctx, 64);
+  crypto_blake2b_update(&ctx, signature.data(), 32); // R
+  crypto_blake2b_update(&ctx, A, 32);                // unsigned A
+  crypto_blake2b_update(&ctx, text.data(), text.size());
+  u8 hash_out[64];
+  crypto_blake2b_final(&ctx, hash_out);
+
+  u8 h[32];
+  crypto_eddsa_reduce(h, hash_out);
+
+  // 3. check R == sB - hA
+  // Monocypher's internal function does exactly this for Ed25519
+  // crypto_eddsa_check_equation(signature, public_key, h)
+  if (crypto_eddsa_check_equation((const u8 *)signature.data(), A, h) == 0) {
+    return true;
+  }
+  return false;
 }
 
 } // namespace Xi

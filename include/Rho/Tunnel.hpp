@@ -43,6 +43,8 @@ public:
   Xi::String name = "Tunnel";
   Xi::String key;
   bool isSecure = false, isWindowed = false, isAsleep = false;
+  bool isServer = false, switchReady = false;
+  Xi::Map<u8, Xi::String> meta, otherMeta;
   u64 lastSent = 0, lastSentHeartbeat = 0, lastSeen = 0, lastReceived = 0;
   bool destroyAfterFlush = false, windowAfterFlush = false,
        secureAfterFlush = false, secureXAfterFlush = false;
@@ -62,6 +64,10 @@ public:
     lastSentHeartbeat = now;
     lastSeen = now;
     isAsleep = false;
+    isServer = false;
+    switchReady = false;
+    meta.clear();
+    otherMeta.clear();
     destroyAfterFlush = false;
     lastSentNonce = 0;
     lastReceivedNonce = 0;
@@ -72,7 +78,7 @@ public:
   Xi::String theirEphemeralPublic, intendedEpheHash;
   PacketListener packetListener;
   MapListener probeListener, announceListener, disconnectListener;
-  VoidListener switchRequestListener, destroyListener;
+  VoidListener switchRequestListener, destroyListener, readyListener;
 
   void initEphemeral() { ephemeralKeypair = Xi::generateKeyPair(); }
 
@@ -127,6 +133,7 @@ public:
   void onSwitchRequest(VoidListener cb) {
     switchRequestListener = Xi::Move(cb);
   }
+  void onReady(VoidListener cb) { readyListener = Xi::Move(cb); }
 
   void push(Packet pkt) { outbox.push(pkt); }
   void push(Xi::String s, u64 c = 1) { push(Packet(s, c)); }
@@ -147,6 +154,14 @@ public:
     data.serialize(p.payload);
     push(p);
   }
+  void ready(Xi::Map<u8, Xi::String> data) {
+    Packet p;
+    p.channel = 0;
+    p.important = true;
+    p.payload.pushVarLong(12);
+    data.serialize(p.payload);
+    push(p);
+  }
   void disconnect(Xi::Map<u64, Xi::String> reason) {
     Packet p;
     p.channel = 0;
@@ -163,9 +178,13 @@ public:
     if (!ephemeralKeypair.publicKey.length())
       ephemeralKeypair = Xi::generateKeyPair();
     Xi::String req;
+    Xi::String serializedMeta;
+    meta.serialize(serializedMeta);
+
     if (isSecure && key.length() == 32) {
       Xi::String theirHash = Xi::hash(theirEpheKey, 8),
-                 myPub = ephemeralKeypair.publicKey, toSign = theirHash + myPub;
+                 myPub = ephemeralKeypair.publicKey,
+                 toSign = theirHash + myPub + serializedMeta;
       Xi::String polyKey = Xi::createPoly1305Key(key, 0xFFFFFFFFFFFFFFFFULL);
       Xi::String fullTag = Xi::zeros(16);
       crypto_poly1305(fullTag.data(), toSign.data(), toSign.length(),
@@ -175,6 +194,7 @@ public:
       req += Xi::zeros(8);
     req += Xi::hash(theirEpheKey, 8);
     req += ephemeralKeypair.publicKey;
+    req += serializedMeta;
     Xi::String res;
     res.pushVarLong(20);
     res += req;
@@ -199,6 +219,22 @@ public:
     Xi::String newKey = Xi::kdf(shared, "RhoPufferV1", 32);
 
     enableSecurity(newKey);
+
+    if (isServer) {
+      switchReady = true;
+
+      if (meta.size() > 0) {
+        ready(meta);
+      }
+
+      if (readyListener.isValid())
+        readyListener();
+    } else {
+      if (meta.size() > 0) {
+        ready(meta);
+      }
+    }
+
     return true;
   }
 
@@ -315,9 +351,18 @@ public:
         }
         if (pAt + 32 <= p.payload.length()) {
           theirEphemeralPublic = p.payload.substring(pAt, pAt + 32);
+          pAt += 32;
         }
+        otherMeta = Xi::Map<u8, Xi::String>::deserialize(p.payload, pAt);
         if (switchRequestListener.isValid())
           switchRequestListener();
+      } else if (type == 12) {
+        otherMeta = Xi::Map<u8, Xi::String>::deserialize(p.payload, pAt);
+        if (!switchReady) {
+          switchReady = true;
+          if (readyListener.isValid())
+            readyListener();
+        }
       }
     } else {
       if (packetListener.isValid()) {
@@ -403,6 +448,12 @@ public:
         parsePacket(content.substring(sAt, sAt + (usz)pkL));
         sAt += (usz)pkL;
       }
+    }
+
+    if (isSecure && !switchReady) {
+      switchReady = true;
+      if (readyListener.isValid())
+        readyListener();
     }
   }
 

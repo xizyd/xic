@@ -17,6 +17,7 @@ class String;
 // Serialization methods are now integrated into String and Map.
 
 int parseInt(const String &s);
+long long parseLong(const String &s);
 f64 parseDouble(const String &s);
 void secureRandomFill(u8 *buffer, usz size);
 
@@ -649,7 +650,7 @@ public:
 };
 
 template <> struct FNVHasher<String> {
-  static usz hash(const String &s) {
+  static usz fnvHash(const String &s) {
 #if __SIZEOF_POINTER__ == 8
     usz h = 14695981039346656037ULL;
     const usz prime = 1099511628211ULL;
@@ -692,6 +693,22 @@ inline int parseInt(const String &s) {
     return 0;
   int result = 0;
   int sign = (d[0] == '-') ? -1 : 1;
+  usz i = (d[0] == '-' || d[0] == '+') ? 1 : 0;
+  for (; i < length; ++i) {
+    if (d[i] >= '0' && d[i] <= '9')
+      result = result * 10 + (d[i] - '0');
+    else
+      break;
+  }
+  return result * sign;
+}
+inline long long parseLong(const String &s) {
+  const u8 *d = const_cast<String &>(s).data();
+  usz length = s.size();
+  if (length == 0 || !d)
+    return 0;
+  long long result = 0;
+  long long sign = (d[0] == '-') ? -1 : 1;
   usz i = (d[0] == '-' || d[0] == '+') ? 1 : 0;
   for (; i < length; ++i) {
     if (d[i] >= '0' && d[i] <= '9')
@@ -769,5 +786,6 @@ inline u64 readVarLong(const Xi::String &s, usz &at) {
   at += res.bytes;
   return (u64)res.value;
 }
+
 } // namespace Xi
 #endif
