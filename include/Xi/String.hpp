@@ -125,6 +125,8 @@ public:
 
   ~String() {}
 
+  void clear() { destroy(); }
+
   String(const String &o) : InlineArray<u8>(o) {}
 
   String(String &&o) noexcept : InlineArray<u8>(Xi::Move(o)) {}
@@ -535,6 +537,27 @@ public:
   void pushVarString(const String &s) {
     pushVarLong((long long)s.size());
     append_raw(const_cast<String &>(s).data(), s.size());
+  }
+
+  String unshiftVarString() {
+    auto res = peekVarLong();
+    if (res.error)
+      return String();
+    if (size() < (usz)(res.bytes + res.value))
+      return String();
+
+    // Consume header
+    for (int i = 0; i < res.bytes; i++)
+      shift();
+
+    // Extract payload
+    String result = begin(0, (usz)res.value);
+
+    // Consume payload
+    for (long long i = 0; i < res.value; i++)
+      shift();
+
+    return result;
   }
 
   String shiftVarString() {
