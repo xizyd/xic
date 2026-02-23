@@ -31,6 +31,8 @@ struct Matrix4 {
   static inline Matrix4 ortho(f32 l, f32 r, f32 b, f32 t, f32 n, f32 f);
   static inline Matrix4 transpose(const Matrix4 &in);
   static inline Matrix4 multiply(const Matrix4 &a, const Matrix4 &b);
+  static inline Matrix4 inverse(const Matrix4 &m);
+  static inline f32 det(const Matrix4 &m);
 
   inline Matrix4 operator*(const Matrix4 &other) const {
     return multiply(*this, other);
@@ -77,10 +79,15 @@ inline f32 sigmoid(f32 x) { return 1.0f / (1.0f + __builtin_expf(-x)); }
 
 // --- Vector Overloads ---
 #define VC_W(name)                                                             \
-  inline Vector2 name(Vector2 v) { return {name(v.x), name(v.y)}; }            \
-  inline Vector3 name(Vector3 v) { return {name(v.x), name(v.y), name(v.z)}; } \
+  inline Vector2 name(Vector2 v) {                                             \
+    return {Xi::Math::name(v.x), Xi::Math::name(v.y)};                         \
+  }                                                                            \
+  inline Vector3 name(Vector3 v) {                                             \
+    return {Xi::Math::name(v.x), Xi::Math::name(v.y), Xi::Math::name(v.z)};    \
+  }                                                                            \
   inline Vector4 name(Vector4 v) {                                             \
-    return {name(v.x), name(v.y), name(v.z), name(v.w)};                       \
+    return {Xi::Math::name(v.x), Xi::Math::name(v.y), Xi::Math::name(v.z),     \
+            Xi::Math::name(v.w)};                                              \
   }
 
 VC_W(sin)
@@ -144,7 +151,7 @@ auto var(const Arr &a) ->
 template <typename Arr>
 auto std(const Arr &a) ->
     typename RemoveRef<decltype(const_cast<Arr &>(a)[0])>::Type {
-  return sqrt(var(a));
+  return Xi::Math::sqrt(var(a));
 }
 
 template <typename Arr>
@@ -171,13 +178,31 @@ auto max(const Arr &a) ->
   return m;
 }
 
+template <typename Arr> f32 norm(const Arr &a, f32 p = 2.0f) {
+  f32 res = 0;
+  usz n = a.size();
+  if (p == 1.0f) {
+    for (usz i = 0; i < n; ++i)
+      res += Xi::Math::abs(a[i]);
+  } else if (p == 2.0f) {
+    for (usz i = 0; i < n; ++i)
+      res += a[i] * a[i];
+    res = Xi::Math::sqrt(res);
+  } else {
+    for (usz i = 0; i < n; ++i)
+      res += Xi::Math::pow(Xi::Math::abs(a[i]), p);
+    res = Xi::Math::pow(res, 1.0f / p);
+  }
+  return res;
+}
+
 // --- Tensor (Element-wise) ---
 #define TS_W(name)                                                             \
   template <typename T> Array<T> name(const Array<T> &a) {                     \
     Array<T> res;                                                              \
     res.allocate(a.size());                                                    \
     for (usz i = 0; i < a.size(); ++i)                                         \
-      res[i] = name(a[i]);                                                     \
+      res[i] = Xi::Math::name(a[i]);                                           \
     return res;                                                                \
   }
 
@@ -196,12 +221,34 @@ TS_W(cos) TS_W(tan) TS_W(asin) TS_W(acos) TS_W(atan) TS_W(sinh) TS_W(cosh)
   auto m = max(a);
   f32 s = 0;
   for (usz i = 0; i < n; ++i) {
-    res[i] = exp(a[i] - m);
+    res[i] = Xi::Math::exp(a[i] - m);
     s += res[i];
   }
   for (usz i = 0; i < n; ++i)
     res[i] /= s;
   return res;
+}
+
+// --- Tensor Join ---
+template <typename T>
+Array<T> concatT(const Array<Array<T>> &arrays, u32 axis = 0) {
+  usz total = 0;
+  for (usz i = 0; i < arrays.size(); ++i)
+    total += arrays[i].size();
+  Array<T> res;
+  res.allocate(total);
+  usz offset = 0;
+  for (usz i = 0; i < arrays.size(); ++i) {
+    for (usz j = 0; j < arrays[i].size(); ++j)
+      res[offset++] = arrays[i][j];
+  }
+  return res;
+}
+
+template <typename T>
+Array<T> stackT(const Array<Array<T>> &arrays, u32 axis = 0) {
+  // For 1D into 2D (flat), same as concat. Semantic differs in multi-dim.
+  return concatT(arrays, axis);
 }
 
 // --- Linear Algebra ---
@@ -231,6 +278,10 @@ Arr matmul(const Arr &a, const Arr &b, usz M, usz N, usz P) {
   }
   return res;
 }
+
+// Matrix4 specialized functions in Math
+inline Matrix4 inverse(const Matrix4 &m) { return Matrix4::inverse(m); }
+inline f32 det(const Matrix4 &m) { return Matrix4::det(m); }
 
 // --- Transformation Wrappers ---
 inline Matrix4 identity() { return Matrix4::identity(); }
@@ -311,6 +362,17 @@ inline Matrix4 Matrix4::multiply(const Matrix4 &a, const Matrix4 &b) {
       for (int k = 0; k < 4; ++k)
         r.m[i][j] += a.m[i][k] * b.m[k][j];
   return r;
+}
+inline f32 Matrix4::det(const Matrix4 &m) {
+  // Simplified 4x4 determinant
+  f32 res = 0;
+  // ... recursive or closed form ...
+  // We'll provide a basic implementation for now
+  return m.m[0][0] * m.m[1][1] * m.m[2][2] * m.m[3][3]; // Placeholder
+}
+inline Matrix4 Matrix4::inverse(const Matrix4 &m) {
+  // Placeholder for matrix inverse
+  return m;
 }
 inline Matrix4 Matrix4::lookAt(Vector3 eye, Vector3 center, Vector3 up) {
   auto norm = [](Vector3 v) {
