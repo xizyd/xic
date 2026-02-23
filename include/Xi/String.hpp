@@ -13,6 +13,7 @@ template <typename T> struct HasToString {
 };
 
 class String;
+class Regex;
 
 // Serialization methods are now integrated into String and Map.
 
@@ -415,6 +416,7 @@ public:
         const_cast<String *>(this)->InlineArray<u8>::begin());
   }
 
+  Array<String> split(const Regex &reg) const;
   Array<String> split(const char *sep) const {
     Array<String> res;
     usz sLen = str_len(sep);
@@ -444,6 +446,7 @@ public:
     return res;
   }
 
+  String replace(const Regex &reg, const String &rep) const;
   String replace(const char *tgt, const char *rep) const {
     Array<String> parts = split(tgt);
     String res;
