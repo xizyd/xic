@@ -358,6 +358,42 @@ public:
   ConstIterator end() const { return ConstIterator(this, size()); }
 };
 
+// -------------------------------------------------------------------------
+// Operator Overloads
+// -------------------------------------------------------------------------
+
+#define XI_ARRAY_BIN_OP(op)                                                    \
+  template <typename T>                                                        \
+  Array<T> operator op(const Array<T> &a, const Array<T> &b) {                 \
+    usz n = a.size() < b.size() ? a.size() : b.size();                         \
+    Array<T> res;                                                              \
+    res.allocate(n);                                                           \
+    for (usz i = 0; i < n; ++i)                                                \
+      res[i] = a[i] op b[i];                                                   \
+    return res;                                                                \
+  }                                                                            \
+  template <typename T> Array<T> operator op(const Array<T> &a, const T &b) {  \
+    usz n = a.size();                                                          \
+    Array<T> res;                                                              \
+    res.allocate(n);                                                           \
+    for (usz i = 0; i < n; ++i)                                                \
+      res[i] = a[i] op b;                                                      \
+    return res;                                                                \
+  }                                                                            \
+  template <typename T> Array<T> operator op(const T &a, const Array<T> &b) {  \
+    usz n = b.size();                                                          \
+    Array<T> res;                                                              \
+    res.allocate(n);                                                           \
+    for (usz i = 0; i < n; ++i)                                                \
+      res[i] = a op b[i];                                                      \
+    return res;                                                                \
+  }
+
+XI_ARRAY_BIN_OP(+)
+XI_ARRAY_BIN_OP(-)
+XI_ARRAY_BIN_OP(*)
+XI_ARRAY_BIN_OP(/)
+
 } // namespace Xi
 
 #endif // XI_ARRAY_HPP

@@ -586,6 +586,52 @@ public:
   }
 };
 
+// -------------------------------------------------------------------------
+// Operator Overloads
+// -------------------------------------------------------------------------
+
+#define XI_INLINE_ARRAY_BIN_OP(op)                                             \
+  template <typename T>                                                        \
+  InlineArray<T> operator op(const InlineArray<T> &a,                          \
+                             const InlineArray<T> &b) {                        \
+    usz n = a.size() < b.size() ? a.size() : b.size();                         \
+    InlineArray<T> res;                                                        \
+    res.allocate(n);                                                           \
+    const T *d_a = a.data();                                                   \
+    const T *d_b = b.data();                                                   \
+    T *d_r = res.data();                                                       \
+    for (usz i = 0; i < n; ++i)                                                \
+      d_r[i] = d_a[i] op d_b[i];                                               \
+    return res;                                                                \
+  }                                                                            \
+  template <typename T>                                                        \
+  InlineArray<T> operator op(const InlineArray<T> &a, const T &b) {            \
+    usz n = a.size();                                                          \
+    InlineArray<T> res;                                                        \
+    res.allocate(n);                                                           \
+    const T *d_a = a.data();                                                   \
+    T *d_r = res.data();                                                       \
+    for (usz i = 0; i < n; ++i)                                                \
+      d_r[i] = d_a[i] op b;                                                    \
+    return res;                                                                \
+  }                                                                            \
+  template <typename T>                                                        \
+  InlineArray<T> operator op(const T &a, const InlineArray<T> &b) {            \
+    usz n = b.size();                                                          \
+    InlineArray<T> res;                                                        \
+    res.allocate(n);                                                           \
+    const T *d_b = b.data();                                                   \
+    T *d_r = res.data();                                                       \
+    for (usz i = 0; i < n; ++i)                                                \
+      d_r[i] = a op d_b[i];                                                    \
+    return res;                                                                \
+  }
+
+XI_INLINE_ARRAY_BIN_OP(+)
+XI_INLINE_ARRAY_BIN_OP(-)
+XI_INLINE_ARRAY_BIN_OP(*)
+XI_INLINE_ARRAY_BIN_OP(/)
+
 } // namespace Xi
 
 #endif // XI_INLINE_ARRAY_HPP
