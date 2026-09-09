@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenMP REQUIRED)
 
-add_compile_options(-O3 -march=native -ffast-math -mavx2 -mfma -fno-sanitize=all)
+add_compile_options(-O3 -fno-sanitize=all)
 if(OpenMP_CXX_FOUND)
     add_compile_options(${OpenMP_CXX_FLAGS})
     add_link_options(${OpenMP_CXX_FLAGS})

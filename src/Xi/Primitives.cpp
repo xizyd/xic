@@ -29,6 +29,10 @@ i64 millis() {
   return ::millis();
 #elif defined(ESP_PLATFORM)
   return esp_timer_get_time() / 1000ULL;
+#elif defined(MECA_EMBEDDED)
+  struct timespec ts{};
+  clock_gettime(0, &ts);
+  return (i64)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 #elif defined(__XTENSA__)
   unsigned ccount;
   __asm__ volatile("rsr %0, ccount" : "=a"(ccount));
@@ -71,6 +75,10 @@ i64 micros() {
   return ::micros();
 #elif defined(ESP_PLATFORM)
   return esp_timer_get_time();
+#elif defined(MECA_EMBEDDED)
+  struct timespec ts{};
+  clock_gettime(0, &ts);
+  return (i64)(ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000);
 #elif defined(__XTENSA__)
   unsigned ccount;
   __asm__ volatile("rsr %0, ccount" : "=a"(ccount));

@@ -59,7 +59,13 @@ private:
     if (op == 0) {
       static_cast<Decayed *>(src)->~Decayed();
     } else if (op == 1) {
-      new (dst) Decayed(*static_cast<const Decayed *>(src));
+      if (sizeof(Decayed) <= SBO_Size) {
+        new (dst) Decayed(*static_cast<const Decayed *>(src));
+      } else {
+        Decayed *heap_ptr = (Decayed *)::operator new(sizeof(Decayed));
+        new (heap_ptr) Decayed(*static_cast<const Decayed *>(src));
+        *static_cast<void **>(dst) = heap_ptr;
+      }
     } else if (op == 2) {
       new (dst) Decayed(Xi::Move(*static_cast<Decayed *>(src)));
       static_cast<Decayed *>(src)->~Decayed();
@@ -129,7 +135,8 @@ public:
     if (manager_ptr) {
       if (isPointerReadable((const void*)manager_ptr)) {
         const void *src = is_heap ? o.data.heap : (const void *)o.data.local;
-        manager_ptr((void *)src, (void *)&data, 1); // op 1 = clone
+        void *dst = is_heap ? (void *)&data.heap : (void *)data.local;
+        manager_ptr((void *)src, dst, 1); // op 1 = clone
       } else {
         invoke_ptr = nullptr;
         manager_ptr = nullptr;
@@ -149,7 +156,8 @@ public:
       if (manager_ptr) {
         if (isPointerReadable((const void*)manager_ptr)) {
           const void *src = is_heap ? o.data.heap : (const void *)o.data.local;
-          manager_ptr((void *)src, (void *)&data, 1); // op 1 = clone
+          void *dst = is_heap ? (void *)&data.heap : (void *)data.local;
+          manager_ptr((void *)src, dst, 1); // op 1 = clone
         } else {
           invoke_ptr = nullptr;
           manager_ptr = nullptr;

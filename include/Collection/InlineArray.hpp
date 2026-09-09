@@ -260,6 +260,9 @@ public:
     _length = 0;
   }
 
+  /** @brief Clears the array. */
+  void clear() { destroy(); }
+
   /** @brief Allocates or resizes the array. */
   bool allocate(usz len, bool safe = false) {
     if (!block) {
